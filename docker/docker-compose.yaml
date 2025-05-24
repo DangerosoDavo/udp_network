@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  # Regular UDP server
+  udp-server:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: udp-network-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080/udp"
+    command: ["./udp-server"]
+    environment:
+      - UDP_PORT=8080
+      - LOG_LEVEL=info
+    networks:
+      - udp-network
+    healthcheck:
+      test: ["CMD", "nc", "-u", "-z", "localhost", "8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Secure UDP server
+  udp-secure-server:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: udp-secure-server
+    restart: unless-stopped
+    ports:
+      - "8443:8443/udp"
+    command: ["./udp-secure-server"]
+    environment:
+      - UDP_PORT=8443
+      - LOG_LEVEL=info
+    networks:
+      - udp-network
+    healthcheck:
+      test: ["CMD", "nc", "-u", "-z", "localhost", "8443"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  udp-network:
+    driver: bridge

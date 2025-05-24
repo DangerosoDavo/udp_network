@@ -18,7 +18,14 @@ This guide shows you how to deploy the UDP network server using Docker.
 
 2. **Deploy both servers:**
    ```bash
-   docker-compose up -d
+   # Try with explicit file specification first
+   docker-compose -f docker-compose.yml up -d
+   
+   # Alternative if above fails:
+   docker-compose -f docker-compose.yaml up -d
+   
+   # Or if using newer Docker Compose V2:
+   docker compose up -d
    ```
 
 3. **Check status:**
