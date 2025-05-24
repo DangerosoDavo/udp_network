@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log"
 	"time"
-	
-	"github.com/yourusername/udp_network"
-	"github.com/yourusername/udp_network/protocol"
+
+	"github.com/DangerosoDavo/udp_network"
+	"github.com/DangerosoDavo/udp_network/protocol"
 )
 
 func main() {
@@ -16,7 +16,7 @@ func main() {
 		serverAddr = flag.String("addr", "localhost:8080", "Server address")
 	)
 	flag.Parse()
-	
+
 	if *serverMode {
 		runChatServer(*serverAddr)
 	} else {
@@ -26,12 +26,12 @@ func main() {
 
 func runChatServer(addr string) {
 	fmt.Println("Starting UDP Chat Server...")
-	
+
 	server, err := udp_network.NewServer(addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	
+
 	// Set message handler for chat functionality
 	chatHandler := func(conn *protocol.Connection, msg *protocol.Message) {
 		if msg.Type == protocol.MessageTypeText {
@@ -46,18 +46,18 @@ func runChatServer(addr string) {
 					"time":    time.Now().Format("15:04:05"),
 				},
 			}
-			
+
 			server.Broadcast(chatMsg)
 		}
 	}
-	
+
 	server.SetMessageHandler(chatHandler)
-	
+
 	server.Start()
 	defer server.Stop()
-	
+
 	fmt.Printf("Chat server listening on %s\n", addr)
-	
+
 	// Keep running
 	select {}
 }
@@ -67,15 +67,15 @@ func runChatClient(serverAddr string) {
 	fmt.Println("Type messages to send to the chat room")
 	fmt.Println("Commands: /quit to exit")
 	fmt.Println("----------------------------------------")
-	
+
 	client, err := udp_network.NewClient()
 	if err != nil {
 		log.Fatal(err)
 	}
-	
+
 	client.Start()
 	defer client.Stop()
-	
+
 	// Override message handler for chat display
 	client.SetMessageHandler(func(msg *protocol.Message) {
 		if msg.Type == protocol.MessageTypeJSON {
@@ -84,18 +84,18 @@ func runChatClient(serverAddr string) {
 					from := data["from"].(string)
 					message := data["message"].(string)
 					time := data["time"].(string)
-					
+
 					fmt.Printf("\r[%s] %s: %s\n> ", time, from, message)
 				}
 			}
 		}
 	})
-	
+
 	if err := client.Connect(serverAddr); err != nil {
 		log.Fatal(err)
 	}
-	
+
 	fmt.Printf("Connected to %s\n> ", serverAddr)
-	
+
 	client.RunInteractive()
 }

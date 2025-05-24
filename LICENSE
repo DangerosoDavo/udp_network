@@ -1,0 +1,103 @@
+UDP NETWORK PROTOCOL - NON-COMMERCIAL LICENSE
+
+Version 1.0, December 2024
+
+Copyright (c) 2024 DangerosoDavo. All rights reserved.
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. DEFINITIONS
+
+"License" shall mean the terms and conditions for use, reproduction, and 
+distribution as defined by Sections 1 through 8 of this document.
+
+"Licensor" shall mean the copyright owner or entity authorized by the copyright 
+owner that is granting the License.
+
+"You" (or "Your") shall mean an individual or Legal Entity exercising 
+permissions granted by this License.
+
+"Source" form shall mean the preferred form for making modifications, including 
+but not limited to software source code, documentation source, and configuration 
+files.
+
+"Commercial Use" shall mean any use of the Work that directly or indirectly 
+generates revenue, is part of a commercial product or service, or is used by 
+any for-profit organization.
+
+"Work" shall mean the work of authorship, whether in Source or Object form, 
+made available under the License, as indicated by a copyright notice that is 
+included in or attached to the work.
+
+2. GRANT OF LICENSE
+
+Subject to the terms and conditions of this License, the Licensor hereby grants 
+You a worldwide, royalty-free, non-exclusive, non-transferable license to use, 
+reproduce, and distribute the Work in Source or Object form for Non-Commercial 
+purposes only.
+
+3. RESTRICTIONS
+
+a) COMMERCIAL USE PROHIBITED: You may NOT use this Work for any Commercial 
+   purposes without explicit written permission from the Licensor. This includes 
+   but is not limited to:
+   - Using the Work in any commercial product or service
+   - Using the Work to provide commercial services
+   - Using the Work in any for-profit organization
+   - Selling, licensing, or monetizing the Work or any derivative works
+
+b) To obtain permission for Commercial Use, You must contact the Licensor at 
+   the contact information provided in the Work's documentation and obtain 
+   explicit written permission before any Commercial Use.
+
+c) MODIFICATIONS: You may create derivative works based on the Work, but all 
+   derivative works must also be licensed under this same License and are 
+   subject to the same Commercial Use restrictions.
+
+d) ATTRIBUTION: You must give appropriate credit to the original author, provide 
+   a link to the License, and indicate if changes were made. You may do so in 
+   any reasonable manner, but not in any way that suggests the Licensor endorses 
+   You or Your use.
+
+4. DISCLAIMER OF WARRANTY
+
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, 
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A 
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR 
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER 
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
+CONNECTION WITH THE WORK OR THE USE OR OTHER DEALINGS IN THE WORK.
+
+5. LIMITATION OF LIABILITY
+
+IN NO EVENT AND UNDER NO LEGAL THEORY, WHETHER IN TORT (INCLUDING NEGLIGENCE), 
+CONTRACT, OR OTHERWISE, UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN 
+WRITING, SHALL THE LICENSOR BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY DIRECT, 
+INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES OF ANY CHARACTER ARISING 
+AS A RESULT OF THIS LICENSE OR OUT OF THE USE OR INABILITY TO USE THE WORK.
+
+6. TERMINATION
+
+This License and the rights granted hereunder will terminate automatically upon 
+any breach by You of the terms of this License. Upon termination, You shall 
+cease all use and distribution of the Work and destroy all copies.
+
+7. SEVERABILITY
+
+If any provision of this License is held to be unenforceable, such provision 
+shall be reformed only to the extent necessary to make it enforceable, and the 
+remaining provisions of this License shall remain in full force and effect.
+
+8. GOVERNING LAW
+
+This License shall be governed by the laws of the jurisdiction in which the 
+Licensor resides, without regard to its conflict of law provisions.
+
+---
+
+For commercial licensing inquiries, please contact:
+GitHub: @DangerosoDavo
+Repository: https://github.com/DangerosoDavo/udp_network
+
+By using this Work, You acknowledge that You have read, understood, and agree 
+to be bound by the terms and conditions of this License.

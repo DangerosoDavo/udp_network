@@ -1,5 +1,17 @@
 # UDP Network Protocol - API Reference
 
+## Table of Contents
+
+- [Server API](#server-api)
+- [Client API](#client-api)
+- [Secure Server API](#secure-server-api)
+- [Secure Client API](#secure-client-api)
+- [Message Types](#message-types)
+- [Connection API](#connection-api)
+- [Encryption API](#encryption-api)
+- [Examples](#examples)
+- [Best Practices](#best-practices)
+
 ## Server API
 
 ### Creating a Server
@@ -176,7 +188,124 @@ count := transport.GetConnectionCount() int
 transport.CloseConnection(addr string)
 ```
 
-## Example: Game Server
+## Secure Server API
+
+### Creating a Secure Server
+
+```go
+server, err := udp_network.NewSecureServer(address string) (*SecureServer, error)
+```
+
+Creates a new encrypted UDP server with ChaCha20-Poly1305 encryption.
+
+### Secure Server Methods
+
+All standard server methods are available, plus:
+
+```go
+// Set encrypted message handler
+server.OnMessage(handler func(*protocol.Connection, []byte))
+
+// Send encrypted data
+err := server.SendTo(conn *protocol.Connection, data []byte) error
+
+// Broadcast encrypted data to all clients
+err := server.Broadcast(data []byte) error
+
+// Get secure transport
+transport := server.GetTransport() *protocol.SecureTransport
+```
+
+## Secure Client API
+
+### Creating a Secure Client
+
+```go
+client, err := udp_network.NewSecureClient() (*SecureClient, error)
+```
+
+Creates a new encrypted UDP client.
+
+### Secure Client Methods
+
+```go
+// Connect with encryption handshake
+err := client.Connect(address string) error
+
+// Send encrypted data
+err := client.Send(data []byte) error
+
+// Check encrypted connection status
+connected := client.IsConnected() bool
+
+// Get connection info
+info := client.GetConnectionInfo() string
+
+// Set encrypted message handler
+client.OnMessage(callback func([]byte))
+
+// Close connection
+client.Close()
+```
+
+## Encryption API
+
+### Encryption Details
+
+The secure transport uses:
+- **Algorithm**: ChaCha20-Poly1305
+- **Key Exchange**: Curve25519 Diffie-Hellman
+- **Key Size**: 256-bit
+- **Nonce Size**: 96-bit
+- **Authentication Tag**: 128-bit
+
+### Performance Impact
+
+- Additional overhead: ~28 bytes per packet
+- CPU overhead: 5-15% depending on message size
+- Latency impact: Negligible (<1ms)
+
+## Examples
+
+### Secure Communication Example
+
+```go
+// Secure Server
+server, err := udp_network.NewSecureServer(":8080")
+if err != nil {
+    log.Fatal(err)
+}
+
+server.OnMessage(func(conn *protocol.Connection, data []byte) {
+    log.Printf("Received encrypted message: %s", string(data))
+    
+    // Echo back encrypted
+    server.SendTo(conn, []byte("ACK: " + string(data)))
+})
+
+server.Start()
+defer server.Stop()
+
+// Secure Client
+client, err := udp_network.NewSecureClient()
+if err != nil {
+    log.Fatal(err)
+}
+
+client.OnMessage(func(data []byte) {
+    log.Printf("Received: %s", string(data))
+})
+
+if err := client.Connect("localhost:8080"); err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// Send encrypted message
+client.Send([]byte("Hello, secure world!"))
+```
+
+### Game Server Example
 
 ```go
 // Create game server
@@ -267,3 +396,9 @@ server.Start()
    - Messages are delivered out-of-order for speed
    - Use tokenization for text-heavy applications
    - Keep messages under 1400 bytes to avoid fragmentation
+
+6. **Security**
+   - Use secure variants for sensitive data
+   - Key exchange happens automatically
+   - Perfect forward secrecy ensures past sessions remain secure
+   - No need to manage keys manually

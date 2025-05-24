@@ -1,0 +1,44 @@
+===============================================================================
+                           IMPORTANT LEGAL NOTICE
+===============================================================================
+
+UDP Network Protocol - Copyright (c) 2024 DangerosoDavo
+
+This software is licensed for NON-COMMERCIAL USE ONLY.
+
+BY USING THIS SOFTWARE, YOU AGREE TO THE FOLLOWING TERMS:
+
+1. You may NOT use this software for any commercial purpose without explicit
+   written permission from the copyright holder.
+
+2. Commercial use includes but is not limited to:
+   - Using the software in any for-profit organization
+   - Incorporating the software into commercial products or services
+   - Using the software to provide paid services
+   - Selling or licensing the software or derivative works
+
+3. To obtain a commercial license, contact:
+   - GitHub: @DangerosoDavo
+   - Repository: https://github.com/DangerosoDavo/udp_network
+
+4. Non-commercial use is permitted for:
+   - Personal projects
+   - Educational purposes
+   - Academic research
+   - Open source projects (that are also non-commercial)
+
+5. All derivative works must be licensed under the same terms.
+
+6. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+For complete license terms, see the LICENSE file.
+
+===============================================================================
+                         ENCRYPTION EXPORT NOTICE
+===============================================================================
+
+This software contains cryptographic functionality (ChaCha20-Poly1305 and 
+Curve25519) which may be subject to export restrictions in some jurisdictions.
+Users are responsible for complying with all applicable laws and regulations.
+
+===============================================================================

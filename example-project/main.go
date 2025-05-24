@@ -5,8 +5,8 @@ import (
 	"log"
 	"time"
 	
-	udpnet "github.com/yourusername/udp_network"
-	"github.com/yourusername/udp_network/protocol"
+	udpnet "github.com/DangerosoDavo/udp_network"
+	"github.com/DangerosoDavo/udp_network/protocol"
 )
 
 func main() {

@@ -21,6 +21,8 @@ const (
 	TypeKeepAlive PacketType = 0x04
 	TypeHandshake PacketType = 0x05
 	TypeBitmapAck PacketType = 0x06
+	TypeCryptoHandshake PacketType = 0x07
+	TypeEncrypted PacketType = 0x08
 )
 
 type PacketFlags uint8
@@ -30,6 +32,7 @@ const (
 	FlagCompressed PacketFlags = 0x02
 	FlagTokenized  PacketFlags = 0x04
 	FlagLastFrag   PacketFlags = 0x08
+	FlagEncrypted  PacketFlags = 0x10
 )
 
 type Packet struct {
