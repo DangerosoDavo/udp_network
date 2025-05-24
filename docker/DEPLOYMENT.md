@@ -155,19 +155,35 @@ docker-compose stop udp-server
 
 ### Common Issues
 
-1. **Port already in use:**
+1. **"no configuration file provided: not found":**
+   ```bash
+   # Make sure you're in the right directory
+   pwd  # Should show .../udp_network/docker
+   ls   # Should show docker-compose.yml
+   
+   # Try explicit file specification
+   docker-compose -f docker-compose.yml up -d
+   
+   # Or try the .yaml extension
+   docker-compose -f docker-compose.yaml up -d
+   
+   # For Docker Compose V2 (newer)
+   docker compose up -d
+   ```
+
+2. **Port already in use:**
    ```bash
    # Check what's using the port
    sudo netstat -tulpn | grep :8080
    ```
 
-2. **Container won't start:**
+3. **Container won't start:**
    ```bash
    # Check logs
    docker-compose logs udp-server
    ```
 
-3. **Can't connect:**
+4. **Can't connect:**
    - Verify firewall allows UDP traffic
    - Check if container is running: `docker-compose ps`
    - Test locally first: `nc -u localhost 8080`

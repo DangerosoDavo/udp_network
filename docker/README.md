@@ -7,7 +7,15 @@ This folder contains Docker configuration for deploying the UDP Network servers.
 ```bash
 # From the project root
 cd docker
-docker-compose up -d
+
+# Option 1: Use the deployment script (recommended)
+./deploy.sh
+
+# Option 2: Manual deployment
+docker-compose -f docker-compose.yml up -d
+
+# Option 3: For newer Docker Compose V2
+docker compose up -d
 ```
 
 This will start:
