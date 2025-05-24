@@ -184,8 +184,8 @@ func (t *Transport) processOutgoing() {
 
 			t.conn.WriteToUDP(data, out.conn.Addr)
 
-			// Add to send window if it's a data packet
-			if out.packet.Type == TypeData {
+			// Add to send window if it's a data packet or encrypted packet
+			if out.packet.Type == TypeData || out.packet.Type == TypeEncrypted {
 				out.conn.addToSendWindow(out.packet)
 			}
 		}

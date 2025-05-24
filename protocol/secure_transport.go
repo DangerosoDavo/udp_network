@@ -245,6 +245,11 @@ func (st *SecureTransport) SendSecure(conn *Connection, data []byte) error {
 		return fmt.Errorf("encryption not established")
 	}
 
+	// Wait if send window is full (same as regular Send)
+	for !conn.canSend() {
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	// Encrypt the data
 	encrypted, err := cs.Encrypt(data)
 	if err != nil {

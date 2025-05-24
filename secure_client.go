@@ -2,6 +2,7 @@ package udp_network
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/DangerosoDavo/udp_network/protocol"
 )
@@ -49,6 +50,16 @@ func (c *SecureClient) SendMessage(msg *protocol.Message) error {
 
 	handler := protocol.NewMessageHandler(c.transport.Transport)
 	return handler.SendMessage(c.conn, msg)
+}
+
+func (c *SecureClient) SendText(text string) error {
+	msg := &protocol.Message{
+		Type:      protocol.MessageTypeText,
+		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		Timestamp: time.Now().Unix(),
+		Data:      text,
+	}
+	return c.SendMessage(msg)
 }
 
 func (c *SecureClient) OnMessage(callback func([]byte)) {
