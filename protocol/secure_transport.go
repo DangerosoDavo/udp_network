@@ -79,6 +79,9 @@ func (st *SecureTransport) handlePacket(packet *Packet, addr *net.UDPAddr) {
 		}
 		conn = NewConnection(addr)
 		st.connections[addr.String()] = conn
+		
+		// Initialize crypto for new connection
+		st.initCrypto(conn)
 	}
 	st.connMu.Unlock()
 	
@@ -89,14 +92,22 @@ func (st *SecureTransport) handlePacket(packet *Packet, addr *net.UDPAddr) {
 		st.handleCryptoHandshake(conn, packet)
 	case TypeEncrypted:
 		st.handleEncrypted(conn, packet)
-	default:
-		// For backward compatibility, still handle unencrypted packets
-		if packet.Type == TypeData && st.RequireEncryption {
+	case TypeHandshake:
+		st.Transport.handleHandshake(conn, packet)
+	case TypeData:
+		if st.RequireEncryption {
 			// Reject unencrypted data if encryption is required
 			return
 		}
-		// Call parent handler
-		st.Transport.handlePacket(packet, addr)
+		st.Transport.handleData(conn, packet)
+	case TypeAck:
+		st.Transport.handleAck(conn, packet)
+	case TypeNack:
+		st.Transport.handleNack(conn, packet)
+	case TypeKeepAlive:
+		// Just update lastActivity (already done above)
+	case TypeBitmapAck:
+		st.Transport.handleBitmapAck(conn, packet)
 	}
 }
 
@@ -124,8 +135,8 @@ func (st *SecureTransport) handleCryptoHandshake(conn *Connection, packet *Packe
 			return
 		}
 		
-		// If we haven't sent our key yet, send it now
-		if conn.state == StateNew || conn.state == StateHandshaking {
+		// If we're the server (receiving initial handshake), send our key back
+		if conn.state == StateNew {
 			// Send our public key
 			response := &Packet{
 				Type:    TypeCryptoHandshake,
@@ -135,14 +146,22 @@ func (st *SecureTransport) handleCryptoHandshake(conn *Connection, packet *Packe
 				packet: response,
 				conn:   conn,
 			}
-			
-			// Now send regular handshake
+		}
+		
+		// If crypto is now established, proceed with regular handshake
+		if cs.IsEstablished() && conn.state != StateConnected {
+			// Send regular handshake
 			handshake := &Packet{
 				Type: TypeHandshake,
 			}
 			st.outgoingCh <- &outgoingPacket{
 				packet: handshake,
 				conn:   conn,
+			}
+			
+			// Update state
+			if conn.state == StateNew {
+				conn.state = StateHandshaking
 			}
 		}
 	}
