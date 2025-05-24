@@ -2,6 +2,7 @@ package udp_network
 
 import (
 	"fmt"
+
 	"github.com/DangerosoDavo/udp_network/protocol"
 )
 
@@ -15,7 +16,7 @@ func NewSecureClient() (*SecureClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &SecureClient{
 		transport: transport,
 	}, nil
@@ -23,12 +24,12 @@ func NewSecureClient() (*SecureClient, error) {
 
 func (c *SecureClient) Connect(address string) error {
 	c.transport.Start()
-	
+
 	conn, err := c.transport.SecureConnect(address)
 	if err != nil {
 		return err
 	}
-	
+
 	c.conn = conn
 	return nil
 }
@@ -37,7 +38,7 @@ func (c *SecureClient) Send(data []byte) error {
 	if c.conn == nil {
 		return fmt.Errorf("not connected")
 	}
-	
+
 	return c.transport.SendSecure(c.conn, data)
 }
 
@@ -45,7 +46,7 @@ func (c *SecureClient) SendMessage(msg *protocol.Message) error {
 	if c.conn == nil {
 		return fmt.Errorf("not connected")
 	}
-	
+
 	handler := protocol.NewMessageHandler(c.transport.Transport)
 	return handler.SendMessage(c.conn, msg)
 }
@@ -86,6 +87,6 @@ func (c *SecureClient) GetConnectionInfo() string {
 	if c.conn == nil {
 		return "Not connected"
 	}
-	
+
 	return fmt.Sprintf("Connected to %s (Encrypted: ChaCha20-Poly1305)", c.conn.Addr.String())
 }

@@ -12,7 +12,7 @@ type SecureTransport struct {
 	*Transport
 	cryptoStates map[string]*CryptoState
 	cryptoMu     sync.RWMutex
-	
+
 	// Configuration
 	RequireEncryption bool // If true, reject unencrypted data packets
 }
@@ -22,54 +22,40 @@ func NewSecureTransport(address string) (*SecureTransport, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	st := &SecureTransport{
 		Transport:         transport,
 		cryptoStates:      make(map[string]*CryptoState),
 		RequireEncryption: true,
 	}
-	
-	// Store original callbacks
-	originalOnConnect := transport.OnConnect
-	originalOnDisconnect := transport.OnDisconnect
-	
-	// Override callbacks to handle crypto
-	transport.OnConnect = func(conn *Connection) {
-		st.initCrypto(conn)
-		if originalOnConnect != nil {
-			originalOnConnect(conn)
-		}
-	}
-	
-	transport.OnDisconnect = func(conn *Connection) {
-		st.cleanupCrypto(conn)
-		if originalOnDisconnect != nil {
-			originalOnDisconnect(conn)
-		}
-	}
-	
+
+	// Override the processIncoming to handle crypto packets
 	return st, nil
 }
 
-func (st *SecureTransport) initCrypto(conn *Connection) {
-	cs, err := NewCryptoState()
-	if err != nil {
-		return
+func (st *SecureTransport) Start() {
+	st.wg.Add(4)
+	go st.readLoop()
+	go st.processIncomingSecure() // Use our secure processor
+	go st.processOutgoing()
+	go st.maintenanceLoop()
+}
+
+func (st *SecureTransport) processIncomingSecure() {
+	defer st.wg.Done()
+
+	for {
+		select {
+		case <-st.ctx.Done():
+			return
+		case in := <-st.incomingCh:
+			st.handlePacketSecure(in.packet, in.addr)
+		}
 	}
-	
-	st.cryptoMu.Lock()
-	st.cryptoStates[conn.Addr.String()] = cs
-	st.cryptoMu.Unlock()
 }
 
-func (st *SecureTransport) cleanupCrypto(conn *Connection) {
-	st.cryptoMu.Lock()
-	delete(st.cryptoStates, conn.Addr.String())
-	st.cryptoMu.Unlock()
-}
-
-// Override handlePacket to support crypto handshake
-func (st *SecureTransport) handlePacket(packet *Packet, addr *net.UDPAddr) {
+func (st *SecureTransport) handlePacketSecure(packet *Packet, addr *net.UDPAddr) {
+	// Get or create connection
 	st.connMu.Lock()
 	conn, exists := st.connections[addr.String()]
 	if !exists {
@@ -79,65 +65,59 @@ func (st *SecureTransport) handlePacket(packet *Packet, addr *net.UDPAddr) {
 		}
 		conn = NewConnection(addr)
 		st.connections[addr.String()] = conn
-		
-		// Initialize crypto for new connection
-		st.initCrypto(conn)
 	}
 	st.connMu.Unlock()
-	
+
 	conn.lastActivity = time.Now()
-	
+
+	// Handle different packet types
 	switch packet.Type {
 	case TypeCryptoHandshake:
 		st.handleCryptoHandshake(conn, packet)
+
+	case TypeHandshake:
+		// Only handle handshake if crypto is established
+		st.cryptoMu.RLock()
+		cs, hasCrypto := st.cryptoStates[conn.Addr.String()]
+		st.cryptoMu.RUnlock()
+
+		if hasCrypto && cs.IsEstablished() {
+			// Use parent's handshake handler
+			st.Transport.handleHandshake(conn, packet)
+		}
+
 	case TypeEncrypted:
 		st.handleEncrypted(conn, packet)
-	case TypeHandshake:
-		st.Transport.handleHandshake(conn, packet)
-	case TypeData:
-		if st.RequireEncryption {
-			// Reject unencrypted data if encryption is required
-			return
-		}
-		st.Transport.handleData(conn, packet)
-	case TypeAck:
-		st.Transport.handleAck(conn, packet)
-	case TypeNack:
-		st.Transport.handleNack(conn, packet)
-	case TypeKeepAlive:
-		// Just update lastActivity (already done above)
-	case TypeBitmapAck:
-		st.Transport.handleBitmapAck(conn, packet)
+
+	default:
+		// Handle other packet types normally
+		st.Transport.handlePacket(packet, addr)
 	}
 }
 
 func (st *SecureTransport) handleCryptoHandshake(conn *Connection, packet *Packet) {
+	// Get or create crypto state
 	st.cryptoMu.Lock()
 	cs, exists := st.cryptoStates[conn.Addr.String()]
-	st.cryptoMu.Unlock()
-	
 	if !exists {
-		// Create new crypto state for incoming connection
 		var err error
 		cs, err = NewCryptoState()
 		if err != nil {
+			st.cryptoMu.Unlock()
 			return
 		}
-		
-		st.cryptoMu.Lock()
 		st.cryptoStates[conn.Addr.String()] = cs
-		st.cryptoMu.Unlock()
 	}
-	
+	st.cryptoMu.Unlock()
+
+	// Process the public key
 	if len(packet.Payload) == DHKeySize {
-		// Set remote public key
 		if err := cs.SetRemotePublicKey(packet.Payload); err != nil {
 			return
 		}
-		
-		// If we're the server (receiving initial handshake), send our key back
-		if conn.state == StateNew {
-			// Send our public key
+
+		// If we haven't sent our key yet (server side), send it
+		if !exists {
 			response := &Packet{
 				Type:    TypeCryptoHandshake,
 				Payload: cs.GetPublicKey(),
@@ -147,23 +127,6 @@ func (st *SecureTransport) handleCryptoHandshake(conn *Connection, packet *Packe
 				conn:   conn,
 			}
 		}
-		
-		// If crypto is now established, proceed with regular handshake
-		if cs.IsEstablished() && conn.state != StateConnected {
-			// Send regular handshake
-			handshake := &Packet{
-				Type: TypeHandshake,
-			}
-			st.outgoingCh <- &outgoingPacket{
-				packet: handshake,
-				conn:   conn,
-			}
-			
-			// Update state
-			if conn.state == StateNew {
-				conn.state = StateHandshaking
-			}
-		}
 	}
 }
 
@@ -171,21 +134,21 @@ func (st *SecureTransport) handleEncrypted(conn *Connection, packet *Packet) {
 	st.cryptoMu.RLock()
 	cs, exists := st.cryptoStates[conn.Addr.String()]
 	st.cryptoMu.RUnlock()
-	
+
 	if !exists || !cs.IsEstablished() {
 		return
 	}
-	
+
 	// Decrypt the payload
 	decrypted, err := cs.Decrypt(packet.Payload)
 	if err != nil {
 		return
 	}
-	
+
 	// Create a new packet with decrypted data
 	decryptedPacket := &Packet{
 		Type:       TypeData,
-		Flags:      packet.Flags &^ FlagEncrypted, // Remove encrypted flag
+		Flags:      packet.Flags &^ FlagEncrypted,
 		SeqNum:     packet.SeqNum,
 		AckNum:     packet.AckNum,
 		FragmentID: packet.FragmentID,
@@ -194,9 +157,9 @@ func (st *SecureTransport) handleEncrypted(conn *Connection, packet *Packet) {
 		Payload:    decrypted,
 		Timestamp:  packet.Timestamp,
 	}
-	
+
 	// Process as normal data packet
-	st.handleData(conn, decryptedPacket)
+	st.Transport.handleData(conn, decryptedPacket)
 }
 
 // SecureConnect establishes an encrypted connection
@@ -205,68 +168,67 @@ func (st *SecureTransport) SecureConnect(address string) (*Connection, error) {
 	if err != nil {
 		return nil, err
 	}
-	
-	// Create crypto state
+
+	// Create connection and crypto state
+	conn := NewConnection(addr)
 	cs, err := NewCryptoState()
 	if err != nil {
 		return nil, err
 	}
-	
-	conn := NewConnection(addr)
-	
+
+	// Register connection and crypto state
 	st.connMu.Lock()
 	st.connections[addr.String()] = conn
 	st.connMu.Unlock()
-	
+
 	st.cryptoMu.Lock()
 	st.cryptoStates[addr.String()] = cs
 	st.cryptoMu.Unlock()
-	
-	// Send crypto handshake first
-	cryptoHandshake := &Packet{
+
+	// Phase 1: Exchange crypto keys
+	cryptoPacket := &Packet{
 		Type:    TypeCryptoHandshake,
 		Payload: cs.GetPublicKey(),
 	}
-	
 	st.outgoingCh <- &outgoingPacket{
-		packet: cryptoHandshake,
+		packet: cryptoPacket,
 		conn:   conn,
 	}
-	
-	// Wait for crypto establishment
-	timeout := time.NewTimer(5 * time.Second)
-	defer timeout.Stop()
-	
-	for {
-		select {
-		case <-timeout.C:
-			return nil, fmt.Errorf("crypto handshake timeout")
-		case <-time.After(100 * time.Millisecond):
-			if cs.IsEstablished() {
-				// Now do regular handshake
-				handshake := &Packet{
-					Type: TypeHandshake,
-				}
-				conn.state = StateHandshaking
-				st.outgoingCh <- &outgoingPacket{
-					packet: handshake,
-					conn:   conn,
-				}
-				
-				// Wait for connection
-				for {
-					select {
-					case <-timeout.C:
-						return nil, fmt.Errorf("connection timeout")
-					case <-time.After(100 * time.Millisecond):
-						if conn.state == StateConnected {
-							return conn, nil
-						}
-					}
-				}
-			}
+
+	// Wait for crypto to be established
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cs.IsEstablished() {
+			break
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
+
+	if !cs.IsEstablished() {
+		return nil, fmt.Errorf("crypto handshake timeout")
+	}
+
+	// Phase 2: Normal connection handshake
+	conn.state = StateHandshaking
+	handshakePacket := &Packet{
+		Type:   TypeHandshake,
+		SeqNum: 0,
+	}
+	st.outgoingCh <- &outgoingPacket{
+		packet: handshakePacket,
+		conn:   conn,
+	}
+
+	// Wait for connection to be established
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn.state == StateConnected {
+			return conn, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return nil, fmt.Errorf("connection handshake timeout")
 }
 
 // SendSecure sends encrypted data
@@ -274,26 +236,22 @@ func (st *SecureTransport) SendSecure(conn *Connection, data []byte) error {
 	if conn.state != StateConnected {
 		return fmt.Errorf("connection not established")
 	}
-	
+
 	st.cryptoMu.RLock()
 	cs, exists := st.cryptoStates[conn.Addr.String()]
 	st.cryptoMu.RUnlock()
-	
+
 	if !exists || !cs.IsEstablished() {
 		return fmt.Errorf("encryption not established")
 	}
-	
+
 	// Encrypt the data
 	encrypted, err := cs.Encrypt(data)
 	if err != nil {
 		return err
 	}
-	
-	// Wait if send window is full
-	for !conn.canSend() {
-		time.Sleep(10 * time.Millisecond)
-	}
-	
+
+	// Send as encrypted packet
 	packet := &Packet{
 		Type:      TypeEncrypted,
 		Flags:     FlagEncrypted,
@@ -301,35 +259,13 @@ func (st *SecureTransport) SendSecure(conn *Connection, data []byte) error {
 		Payload:   encrypted,
 		Timestamp: time.Now(),
 	}
-	
+
 	conn.nextSeqNum++
-	
+
 	st.outgoingCh <- &outgoingPacket{
 		packet: packet,
 		conn:   conn,
 	}
-	
+
 	return nil
-}
-
-// Override Start to use our handlePacket
-func (st *SecureTransport) Start() {
-	st.wg.Add(4)
-	go st.readLoop()
-	go st.processIncoming()
-	go st.processOutgoing()
-	go st.maintenanceLoop()
-}
-
-func (st *SecureTransport) processIncoming() {
-	defer st.wg.Done()
-	
-	for {
-		select {
-		case <-st.ctx.Done():
-			return
-		case in := <-st.incomingCh:
-			st.handlePacket(in.packet, in.addr)
-		}
-	}
 }
