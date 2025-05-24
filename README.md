@@ -231,9 +231,36 @@ client.SendMessage(client.Connection, action)
 - Fixed message handler setup race conditions
 - Fixed fragmentation for large messages
 
+## Using as a Module
+
+To use this in your own project:
+
+```bash
+# Option 1: From GitHub (after pushing to your repo)
+go get github.com/yourusername/udp_network@latest
+
+# Option 2: Local development
+# Add to your go.mod:
+# replace github.com/yourusername/udp_network => /path/to/udp_network
+```
+
+Example usage:
+```go
+import (
+    udpnet "github.com/yourusername/udp_network"
+    "github.com/yourusername/udp_network/protocol"
+)
+
+server, _ := udpnet.NewServer(":8080")
+server.Start()
+```
+
+See [INSTALLATION.md](INSTALLATION.md) for detailed instructions.
+
 ## Documentation
 
 - [API Reference](API.md) - Complete API documentation
+- [Installation Guide](INSTALLATION.md) - How to use as a module
 - [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions
 - [Usage Examples](README-USAGE.md) - How to run server and client
 

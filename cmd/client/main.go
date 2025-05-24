@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"udp_network"
+	"github.com/yourusername/udp_network"
 )
 
 func main() {

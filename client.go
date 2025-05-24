@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"udp_network/protocol"
+	"github.com/DangerosoDavo/udp_network/protocol"
 )
 
 type Client struct {
@@ -55,10 +55,10 @@ func (c *Client) Connect(serverAddr string) error {
 	})
 
 	log.Printf("Connected to server: %s", serverAddr)
-	
+
 	// Start heartbeat to keep connection alive
 	c.startHeartbeat()
-	
+
 	return nil
 }
 
@@ -238,11 +238,11 @@ func (c *Client) SendMessage(conn *protocol.Connection, msg *protocol.Message) e
 // startHeartbeat sends periodic heartbeats to keep connection alive
 func (c *Client) startHeartbeat() {
 	c.heartbeatStop = make(chan bool)
-	
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Second) // Send heartbeat every 5 seconds
 		defer ticker.Stop()
-		
+
 		for {
 			select {
 			case <-c.heartbeatStop:

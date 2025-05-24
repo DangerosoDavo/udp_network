@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 	
-	"udp_network"
-	"udp_network/protocol"
+	"github.com/yourusername/udp_network"
+	"github.com/yourusername/udp_network/protocol"
 )
 
 // Player represents a connected game player

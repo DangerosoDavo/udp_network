@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"udp_network"
+	"github.com/DangerosoDavo/udp_network"
 )
 
 func main() {

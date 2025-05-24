@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"udp_network/protocol"
+	"github.com/DangerosoDavo/udp_network/protocol"
 )
 
 type Server struct {
@@ -240,13 +240,13 @@ func (s *Server) broadcast(message string, sender *protocol.Connection) {
 func (s *Server) SetMessageHandler(handler func(*protocol.Connection, *protocol.Message)) {
 	// Store custom handler
 	s.customHandler = handler
-	
+
 	// Update OnConnect to use custom handler
 	s.transport.OnConnect = func(conn *protocol.Connection) {
 		s.clientsMu.Lock()
 		s.clients[conn.Addr.String()] = conn
 		s.clientsMu.Unlock()
-		
+
 		log.Printf("Client connected: %s", conn.Addr.String())
 
 		s.handler.SetMessageCallback(conn, func(msg *protocol.Message) {
@@ -283,7 +283,7 @@ func (s *Server) Transport() *protocol.Transport {
 func (s *Server) Clients() map[string]*protocol.Connection {
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
-	
+
 	// Return a copy to avoid race conditions
 	clients := make(map[string]*protocol.Connection)
 	for k, v := range s.clients {
@@ -319,7 +319,7 @@ func (s *Server) SetConnectionCallbacks(onConnect, onDisconnect func(*protocol.C
 			onConnect(conn)
 		}
 	}
-	
+
 	if onDisconnect != nil {
 		existingDisconnect := s.transport.OnDisconnect
 		s.transport.OnDisconnect = func(conn *protocol.Connection) {

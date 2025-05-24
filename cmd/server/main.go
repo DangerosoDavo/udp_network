@@ -2,7 +2,7 @@ package main
 
 import (
 	"log"
-	"udp_network"
+	"github.com/yourusername/udp_network"
 )
 
 func main() {

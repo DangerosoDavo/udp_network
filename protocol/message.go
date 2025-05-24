@@ -3,7 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
-	"udp_network/tokenizer"
+	"github.com/yourusername/udp_network/tokenizer"
 )
 
 type MessageType string

@@ -1,3 +1,3 @@
-module udp_network
+module github.com/yourusername/udp_network
 
 go 1.21

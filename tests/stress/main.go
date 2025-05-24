@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"udp_network"
-	"udp_network/protocol"
+	"github.com/DangerosoDavo/udp_network"
+	"github.com/DangerosoDavo/udp_network/protocol"
 )
 
 func main() {
