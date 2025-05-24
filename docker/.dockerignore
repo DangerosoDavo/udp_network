@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Test files
+tests/
+*_test.go
+
+# Build artifacts
+udp-client
+udp-server
+*.tar.gz
+
+# Development files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
