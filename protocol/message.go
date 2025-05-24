@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+
 	"github.com/DangerosoDavo/udp_network/tokenizer"
 )
 

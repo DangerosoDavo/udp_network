@@ -7,22 +7,22 @@ import (
 )
 
 const (
-	MagicNumber uint16 = 0x5544 // "UD" in hex
-	HeaderSize  = 16
-	MaxPayloadSize = 1400 // Safe UDP payload size
+	MagicNumber    uint16 = 0x5544 // "UD" in hex
+	HeaderSize            = 16
+	MaxPayloadSize        = 1400 // Safe UDP payload size
 )
 
 type PacketType uint8
 
 const (
-	TypeData      PacketType = 0x01
-	TypeAck       PacketType = 0x02
-	TypeNack      PacketType = 0x03
-	TypeKeepAlive PacketType = 0x04
-	TypeHandshake PacketType = 0x05
-	TypeBitmapAck PacketType = 0x06
+	TypeData            PacketType = 0x01
+	TypeAck             PacketType = 0x02
+	TypeNack            PacketType = 0x03
+	TypeKeepAlive       PacketType = 0x04
+	TypeHandshake       PacketType = 0x05
+	TypeBitmapAck       PacketType = 0x06
 	TypeCryptoHandshake PacketType = 0x07
-	TypeEncrypted PacketType = 0x08
+	TypeEncrypted       PacketType = 0x08
 )
 
 type PacketFlags uint8
@@ -53,7 +53,7 @@ func (p *Packet) Marshal() ([]byte, error) {
 	}
 
 	buf := make([]byte, HeaderSize+len(p.Payload))
-	
+
 	binary.BigEndian.PutUint16(buf[0:2], MagicNumber)
 	buf[2] = uint8(p.Type)
 	buf[3] = uint8(p.Flags)
@@ -62,9 +62,9 @@ func (p *Packet) Marshal() ([]byte, error) {
 	binary.BigEndian.PutUint16(buf[12:14], p.FragmentID)
 	buf[14] = p.FragOffset
 	buf[15] = p.FragTotal
-	
+
 	copy(buf[HeaderSize:], p.Payload)
-	
+
 	return buf, nil
 }
 
@@ -72,12 +72,12 @@ func Unmarshal(data []byte) (*Packet, error) {
 	if len(data) < HeaderSize {
 		return nil, errors.New("packet too small")
 	}
-	
+
 	magic := binary.BigEndian.Uint16(data[0:2])
 	if magic != MagicNumber {
 		return nil, errors.New("invalid magic number")
 	}
-	
+
 	p := &Packet{
 		Type:       PacketType(data[2]),
 		Flags:      PacketFlags(data[3]),
@@ -88,12 +88,12 @@ func Unmarshal(data []byte) (*Packet, error) {
 		FragTotal:  data[15],
 		Timestamp:  time.Now(),
 	}
-	
+
 	if len(data) > HeaderSize {
 		p.Payload = make([]byte, len(data)-HeaderSize)
 		copy(p.Payload, data[HeaderSize:])
 	}
-	
+
 	return p, nil
 }
 

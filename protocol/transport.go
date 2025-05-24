@@ -24,7 +24,7 @@ type Transport struct {
 	OnDisconnect func(*Connection)
 
 	// Configuration
-	ConnTimeout      time.Duration // Connection timeout (default 30s)
+	ConnTimeout       time.Duration // Connection timeout (default 30s)
 	KeepAliveInterval time.Duration // Keep-alive interval (default 10s)
 
 	ctx    context.Context
@@ -210,7 +210,7 @@ func (t *Transport) maintenanceLoop() {
 
 func (t *Transport) performMaintenance() {
 	now := time.Now()
-	
+
 	// First pass: collect connections to remove
 	var toRemove []string
 	t.connMu.RLock()
@@ -221,7 +221,7 @@ func (t *Transport) performMaintenance() {
 		}
 	}
 	t.connMu.RUnlock()
-	
+
 	// Remove dead connections
 	if len(toRemove) > 0 {
 		t.connMu.Lock()
@@ -236,14 +236,14 @@ func (t *Transport) performMaintenance() {
 		}
 		t.connMu.Unlock()
 	}
-	
+
 	// Second pass: maintenance on active connections
 	t.connMu.RLock()
 	for _, conn := range t.connections {
 		if conn.state != StateConnected {
 			continue
 		}
-		
+
 		// Clean up old fragments
 		conn.CleanupFragments()
 
@@ -317,7 +317,7 @@ func (t *Transport) handleHandshake(conn *Connection, packet *Packet) {
 			packet: response,
 			conn:   conn,
 		}
-		
+
 		// Transition to connected and trigger callback
 		conn.state = StateConnected
 		if t.OnConnect != nil {
@@ -456,7 +456,7 @@ func (t *Transport) CloseConnection(addr string) {
 		conn.state = StateClosed
 		delete(t.connections, addr)
 		t.connMu.Unlock()
-		
+
 		if t.OnDisconnect != nil {
 			t.OnDisconnect(conn)
 		}
