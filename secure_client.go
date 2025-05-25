@@ -53,6 +53,19 @@ func (c *SecureClient) SendMessage(msg *protocol.Message) error {
 }
 
 func (c *SecureClient) SendText(text string) error {
+	// Automatically use chunked transfer for large strings
+	const largeStringThreshold = 250 * 1024 // 250KB
+	
+	if len(text) > largeStringThreshold {
+		fmt.Printf("🔐📦 Text size (%d bytes) exceeds threshold, using secure chunked transfer\n", len(text))
+		return c.SendLargeString(text, &LargeStringOptions{
+			Metadata: map[string]interface{}{
+				"type": "auto-chunked-text",
+				"original_size": len(text),
+			},
+		})
+	}
+	
 	msg := &protocol.Message{
 		Type:      protocol.MessageTypeText,
 		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),

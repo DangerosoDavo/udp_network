@@ -14,6 +14,7 @@ const (
 	MessageTypeJSON    MessageType = "json"
 	MessageTypeCommand MessageType = "command"
 	MessageTypeBinary  MessageType = "binary"
+	MessageTypeChunked MessageType = "chunked"
 )
 
 type Message struct {
@@ -214,4 +215,9 @@ func (mh *MessageHandler) SetMessageCallback(conn *Connection, callback func(*Me
 			callback(msg)
 		}
 	}
+}
+
+// ParseMessage parses a message from raw bytes
+func (mh *MessageHandler) ParseMessage(data []byte) (*Message, error) {
+	return mh.codec.Decode(data)
 }

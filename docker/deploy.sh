@@ -18,25 +18,41 @@ echo "Attempting to deploy servers..."
 # Try Docker Compose V2 first (newer)
 if command -v docker &> /dev/null && docker compose version &> /dev/null; then
     echo "Using Docker Compose V2..."
-    docker compose up -d
+    if docker compose -f docker-compose.yml up -d 2>/dev/null; then
+        echo "Deployment successful with Docker Compose V2"
+        DEPLOYED=true
+    else
+        echo "Docker Compose V2 failed, trying V1..."
+        if command -v docker-compose &> /dev/null; then
+            if docker-compose -f docker-compose.yml up -d; then
+                echo "Deployment successful with docker-compose V1"
+                DEPLOYED=true
+            fi
+        fi
+    fi
 elif command -v docker-compose &> /dev/null; then
     echo "Using Docker Compose V1..."
     # Try with explicit file specification
     if docker-compose -f docker-compose.yml up -d; then
         echo "Deployment successful with docker-compose.yml"
+        DEPLOYED=true
     elif docker-compose -f docker-compose.yaml up -d; then
         echo "Deployment successful with docker-compose.yaml"
-    else
-        echo "Failed to deploy with docker-compose"
-        exit 1
+        DEPLOYED=true
     fi
-else
-    echo "Error: Docker Compose not found. Please install Docker Compose."
-    exit 1
 fi
 
-echo ""
-echo "Deployment complete!"
+if [ "$DEPLOYED" = true ]; then
+    echo ""
+    echo "Deployment complete!"
+else
+    echo ""
+    echo "Deployment failed! Try manual commands:"
+    echo "  docker-compose -f docker-compose.yml up -d"
+    echo "  OR"
+    echo "  docker compose -f docker-compose.yml up -d"
+    exit 1
+fi
 echo ""
 echo "Services:"
 echo "- Regular UDP Server: port 8080/udp"

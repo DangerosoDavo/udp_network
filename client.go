@@ -93,6 +93,22 @@ func (c *Client) handleJSONMessage(data map[string]interface{}) {
 }
 
 func (c *Client) SendText(text string) error {
+	// Check if text is large enough to require chunking
+	// Use 250KB as threshold (leaving room for protocol overhead)
+	const largeStringThreshold = 250 * 1024
+
+	if len(text) > largeStringThreshold {
+		// Use large string method for big strings
+		fmt.Printf("📦 Text size (%d bytes) exceeds threshold, using chunked transfer\n", len(text))
+		return c.SendLargeString(text, &LargeStringOptions{
+			Metadata: map[string]interface{}{
+				"type":          "auto-chunked-text",
+				"original_size": len(text),
+			},
+		})
+	}
+
+	// Normal path for small strings
 	msg := &protocol.Message{
 		Type:      protocol.MessageTypeText,
 		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
@@ -114,6 +130,17 @@ func (c *Client) SendCommand(cmd string, params map[string]interface{}) error {
 
 	msg := &protocol.Message{
 		Type:      protocol.MessageTypeJSON,
+		Timestamp: time.Now().Unix(),
+		Data:      data,
+	}
+
+	return c.handler.SendMessage(c.Connection, msg)
+}
+
+func (c *Client) SendJSON(data interface{}) error {
+	msg := &protocol.Message{
+		Type:      protocol.MessageTypeJSON,
+		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
 		Timestamp: time.Now().Unix(),
 		Data:      data,
 	}
