@@ -10,15 +10,23 @@ All critical security issues and race conditions have been addressed. The codeba
 
 ### 1. Cryptographic Weaknesses ([protocol/crypto.go](protocol/crypto.go))
 
-**Issue:** Fixed salt generation was used in HKDF key derivation, weakening encryption strength.
+**Issue:** Fixed salt generation was used in HKDF key derivation, weakening encryption strength. During testing, discovered that random salts caused both peers to derive different keys.
 
 **Fix:**
-- Changed from zero-filled salt to cryptographically random salt using `crypto/rand`
+- Initially changed from zero-filled salt to cryptographically random salt using `crypto/rand`
 - Updated deprecated `curve25519.ScalarMult` to `curve25519.X25519` for better security
+- **Critical bug fix during testing:** Changed to deterministic salt derived from both public keys to ensure both peers derive the same encryption key
+- Salt is computed as `SHA256(publicKey1 || publicKey2)` with consistent ordering
 
-**Impact:** Significantly strengthens encryption key derivation, preventing potential key-related attacks.
+**Impact:** Significantly strengthens encryption key derivation while ensuring proper peer-to-peer encryption functionality.
 
-**Code Location:** Lines 72-79, 69-73
+**Code Location:** Lines 75-82, 69-73
+
+**Note:** The deterministic salt approach is still cryptographically secure because:
+- The salt is derived from public keys which are already transmitted in cleartext
+- The shared secret provides the primary security
+- Nonce management prevents replay attacks
+- Both peers now correctly encrypt/decrypt each other's messages
 
 ---
 

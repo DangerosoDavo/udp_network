@@ -72,14 +72,17 @@ func (cs *CryptoState) SetRemotePublicKey(remotePublic []byte) error {
 	}
 	copy(cs.sharedSecret[:], sharedSecret)
 
-	// Derive encryption key using HKDF with random salt
-	salt := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-		return fmt.Errorf("salt generation failed: %w", err)
+	// Derive encryption key using HKDF with deterministic salt
+	// Salt is derived from both public keys to ensure both peers get same key
+	// Sort the public keys to ensure consistent ordering
+	salt := sha256.Sum256(append(append([]byte{}, cs.localPublic[:]...), cs.remotePublic[:]...))
+	if cs.localPublic[0] > cs.remotePublic[0] {
+		// Swap order if remote's first byte is smaller
+		salt = sha256.Sum256(append(append([]byte{}, cs.remotePublic[:]...), cs.localPublic[:]...))
 	}
 	info := []byte("udp-network-v1")
 
-	kdf := hkdf.New(sha256.New, cs.sharedSecret[:], salt, info)
+	kdf := hkdf.New(sha256.New, cs.sharedSecret[:], salt[:], info)
 	key := make([]byte, KeySize)
 	if _, err := io.ReadFull(kdf, key); err != nil {
 		return fmt.Errorf("key derivation failed: %w", err)

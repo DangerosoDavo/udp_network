@@ -148,8 +148,17 @@ func (c *WebSocketClient) readLoop() {
 		default:
 		}
 
-		c.ws.SetReadDeadline(time.Now().Add(c.timeout))
-		messageType, data, err := c.ws.ReadMessage()
+		// Safely access websocket connection
+		c.mu.Lock()
+		ws := c.ws
+		c.mu.Unlock()
+
+		if ws == nil {
+			return
+		}
+
+		ws.SetReadDeadline(time.Now().Add(c.timeout))
+		messageType, data, err := ws.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				if c.enableLogging {
