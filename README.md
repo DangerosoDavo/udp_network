@@ -1,6 +1,6 @@
 # UDP Network Protocol
 
-A high-performance UDP networking protocol implementation in Go with reliability features, end-to-end encryption, JSON message support, and LLM-style string tokenization for efficient text transmission. Optimized for real-time applications like game servers and chat systems.
+A high-performance networking protocol implementation in Go with **dual transport support (UDP + WebSocket)**, reliability features, end-to-end encryption, JSON message support, and LLM-style string tokenization. Optimized for real-time applications including game servers, chat systems, and web applications with unified API across both transports.
 
 ## 📜 License
 
@@ -14,6 +14,8 @@ For commercial licensing inquiries, contact:
 
 ## ✨ Features
 
+- **Dual Transport Support**: Unified API works with both UDP and WebSocket - switch with one parameter
+- **Web Browser Compatible**: WebSocket transport enables direct browser connections
 - **Reliable UDP Transport**: ACK/NACK system with automatic retransmission and out-of-order delivery
 - **End-to-End Encryption**: ChaCha20-Poly1305 with Curve25519 key exchange for fast, secure communication
 - **String Tokenization**: BPE-style tokenizer for efficient text encoding (2-4x compression)
@@ -135,6 +137,27 @@ client.Connect("localhost:8080")
 client.Send([]byte("This is encrypted!"))
 ```
 
+### WebSocket Support (Browser Compatible!)
+
+```go
+// Create WebSocket server - same API as UDP!
+server, err := udpnet.NewUnifiedServer(":8080", &udpnet.ServerOptions{
+    Transport: udpnet.TransportWebSocket,
+})
+
+server.SetMessageHandler(func(conn *protocol.Connection, msg *protocol.Message) {
+    fmt.Printf("Received from browser: %v\n", msg.Data)
+})
+server.Start()
+
+// WebSocket Client (works from Go or browser)
+client, err := udpnet.NewUnifiedClient(&udpnet.ClientOptions{
+    Transport: udpnet.TransportWebSocket,
+})
+client.Connect("ws://localhost:8080")
+client.SendText("Hello from WebSocket!")
+```
+
 ### Game Server Configuration
 
 ```go
@@ -193,6 +216,23 @@ go run tests/crypto-benchmark/main.go
 ```bash
 go run examples/chat/main.go -server
 go run examples/chat/main.go
+```
+
+### WebSocket Chat
+```bash
+go run examples/websocket-chat/main.go -server -addr :8080
+go run examples/websocket-chat/main.go -addr localhost:8080
+```
+
+### Unified Transport (UDP or WebSocket)
+```bash
+# UDP
+go run examples/unified-transport/main.go -server -transport udp -addr :8080
+go run examples/unified-transport/main.go -transport udp -addr localhost:8080
+
+# WebSocket
+go run examples/unified-transport/main.go -server -transport websocket -addr :8081
+go run examples/unified-transport/main.go -transport websocket -addr localhost:8081
 ```
 
 ### Secure Chat
@@ -255,6 +295,7 @@ import (
 - 📑 [Documentation Index](DOCUMENTATION_INDEX.md) - Guide to all documentation
 
 **Detailed Guides:**
+- [WebSocket Transport](WEBSOCKET_TRANSPORT.md) - WebSocket support with unified API
 - [API Overview](API.md) - High-level API documentation
 - [Installation Guide](INSTALLATION.md) - Detailed setup instructions
 - [Large String Transfer](LARGE_STRINGS.md) - Sending files >250KB
