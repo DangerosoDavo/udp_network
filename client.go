@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DangerosoDavo/udp_network/protocol"
@@ -19,6 +20,8 @@ type Client struct {
 	serverAddr    string
 	customHandler func(*protocol.Message)
 	heartbeatStop chan bool
+	mu            sync.Mutex // Protects connection state
+	connected     bool       // Tracks connection state
 }
 
 func NewClient() (*Client, error) {
@@ -36,6 +39,14 @@ func NewClient() (*Client, error) {
 }
 
 func (c *Client) Connect(serverAddr string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Prevent double-connect
+	if c.connected {
+		return fmt.Errorf("already connected to %s", c.serverAddr)
+	}
+
 	c.serverAddr = serverAddr
 
 	conn, err := c.transport.Connect(serverAddr)
@@ -44,6 +55,7 @@ func (c *Client) Connect(serverAddr string) error {
 	}
 
 	c.Connection = conn
+	c.connected = true
 
 	// Set up message handler
 	c.handler.SetMessageCallback(conn, func(msg *protocol.Message) {
@@ -67,10 +79,16 @@ func (c *Client) Start() {
 }
 
 func (c *Client) Stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	// Stop heartbeat
 	if c.heartbeatStop != nil {
 		close(c.heartbeatStop)
+		c.heartbeatStop = nil
 	}
+
+	c.connected = false
 	c.transport.Stop()
 }
 
@@ -276,13 +294,23 @@ func (c *Client) startHeartbeat() {
 				return
 			case <-ticker.C:
 				// Send a lightweight heartbeat message
-				if c.Connection != nil && c.Connection.GetState() == protocol.StateConnected {
+				c.mu.Lock()
+				conn := c.Connection
+				isConnected := c.connected
+				c.mu.Unlock()
+
+				if conn != nil && isConnected && conn.GetState() == protocol.StateConnected {
 					heartbeat := &protocol.Message{
 						Type:      protocol.MessageTypeCommand,
 						Timestamp: time.Now().Unix(),
 						Data:      "heartbeat",
 					}
-					c.SendMessage(c.Connection, heartbeat)
+					// Use goroutine to prevent blocking if send fails
+					go func() {
+						if err := c.SendMessage(conn, heartbeat); err != nil {
+							log.Printf("Heartbeat send failed: %v", err)
+						}
+					}()
 				}
 			}
 		}

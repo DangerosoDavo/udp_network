@@ -249,8 +249,16 @@ import (
 
 ## 📖 Documentation
 
-- [API Reference](API.md) - Complete API documentation
+**Quick Links:**
+- 🚀 [Quick Reference](QUICK_REFERENCE.md) - One-page cheat sheet for all APIs
+- 📚 [Complete API Reference](API_REFERENCE.md) - Full API documentation with examples
+- 📑 [Documentation Index](DOCUMENTATION_INDEX.md) - Guide to all documentation
+
+**Detailed Guides:**
+- [API Overview](API.md) - High-level API documentation
 - [Installation Guide](INSTALLATION.md) - Detailed setup instructions
+- [Large String Transfer](LARGE_STRINGS.md) - Sending files >250KB
+- [Security Fixes](SECURITY_FIXES.md) - Recent security improvements
 - [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions
 - [Usage Examples](README-USAGE.md) - Running server and client
 

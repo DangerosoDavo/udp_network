@@ -65,11 +65,18 @@ func (cs *CryptoState) SetRemotePublicKey(remotePublic []byte) error {
 
 	copy(cs.remotePublic[:], remotePublic)
 
-	// Compute shared secret
-	curve25519.ScalarMult(&cs.sharedSecret, &cs.localPrivate, &cs.remotePublic)
+	// Compute shared secret using X25519
+	sharedSecret, err := curve25519.X25519(cs.localPrivate[:], cs.remotePublic[:])
+	if err != nil {
+		return fmt.Errorf("key exchange failed: %w", err)
+	}
+	copy(cs.sharedSecret[:], sharedSecret)
 
-	// Derive encryption key using HKDF
+	// Derive encryption key using HKDF with random salt
 	salt := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return fmt.Errorf("salt generation failed: %w", err)
+	}
 	info := []byte("udp-network-v1")
 
 	kdf := hkdf.New(sha256.New, cs.sharedSecret[:], salt, info)
@@ -79,7 +86,6 @@ func (cs *CryptoState) SetRemotePublicKey(remotePublic []byte) error {
 	}
 
 	// Create cipher
-	var err error
 	cs.cipher, err = chacha20poly1305.New(key)
 	if err != nil {
 		return fmt.Errorf("cipher creation failed: %w", err)

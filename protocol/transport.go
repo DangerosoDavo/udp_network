@@ -275,10 +275,19 @@ func (t *Transport) handlePacket(packet *Packet, addr *net.UDPAddr) {
 	t.connMu.Lock()
 	conn, exists := t.connections[addr.String()]
 	if !exists {
-		// Check connection limit
+		// Check connection limit before creating new connection
 		if t.maxConns > 0 && len(t.connections) >= t.maxConns {
 			t.connMu.Unlock()
-			return // Drop packet, too many connections
+			// Send explicit rejection response to inform client
+			rejection := &Packet{
+				Type:   TypeNack,
+				SeqNum: packet.SeqNum,
+			}
+			data, err := rejection.Marshal()
+			if err == nil {
+				t.conn.WriteToUDP(data, addr)
+			}
+			return // Drop packet, connection limit reached
 		}
 		conn = NewConnection(addr)
 		t.connections[addr.String()] = conn
@@ -304,9 +313,15 @@ func (t *Transport) handlePacket(packet *Packet, addr *net.UDPAddr) {
 }
 
 func (t *Transport) handleHandshake(conn *Connection, packet *Packet) {
-	if conn.state == StateNew {
+	conn.mu.Lock()
+	currentState := conn.state
+	conn.mu.Unlock()
+
+	if currentState == StateNew {
 		// Server side: receiving initial handshake
+		conn.mu.Lock()
 		conn.state = StateHandshaking
+		conn.mu.Unlock()
 
 		// Send handshake response
 		response := &Packet{
@@ -319,13 +334,19 @@ func (t *Transport) handleHandshake(conn *Connection, packet *Packet) {
 		}
 
 		// Transition to connected and trigger callback
+		conn.mu.Lock()
 		conn.state = StateConnected
+		conn.mu.Unlock()
+
 		if t.OnConnect != nil {
 			t.OnConnect(conn)
 		}
-	} else if conn.state == StateHandshaking {
+	} else if currentState == StateHandshaking {
 		// Client side: receiving handshake response
+		conn.mu.Lock()
 		conn.state = StateConnected
+		conn.mu.Unlock()
+
 		if t.OnConnect != nil {
 			t.OnConnect(conn)
 		}
@@ -411,13 +432,19 @@ func (t *Transport) handleBitmapAck(conn *Connection, packet *Packet) {
 }
 
 func (t *Transport) Send(conn *Connection, data []byte) error {
-	if conn.state != StateConnected {
-		return fmt.Errorf("connection not established (state: %v)", conn.state)
+	conn.mu.RLock()
+	state := conn.state
+	conn.mu.RUnlock()
+
+	if state != StateConnected {
+		return fmt.Errorf("connection not established (state: %v)", state)
 	}
 
-	// Wait if send window is full
+	// Wait if send window is full - use condition variable instead of busy-wait
+	conn.sendWindowMu.Lock()
 	for !conn.canSend() {
-		time.Sleep(10 * time.Millisecond)
+		// Wait for signal that window space is available
+		conn.windowCond.Wait()
 	}
 
 	packet := &Packet{
@@ -428,6 +455,7 @@ func (t *Transport) Send(conn *Connection, data []byte) error {
 	}
 
 	conn.nextSeqNum++
+	conn.sendWindowMu.Unlock()
 
 	t.outgoingCh <- &outgoingPacket{
 		packet: packet,

@@ -3,9 +3,13 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/DangerosoDavo/udp_network/tokenizer"
 )
+
+// Global fragment ID counter to prevent collisions
+var globalFragmentID uint32
 
 type MessageType string
 
@@ -115,8 +119,8 @@ func FragmentMessage(data []byte, maxSize int) ([][]byte, uint16) {
 		return [][]byte{data}, 0
 	}
 
-	// Generate fragment ID
-	fragID := uint16(data[0])<<8 | uint16(data[1])
+	// Generate unique fragment ID using atomic counter to prevent collisions
+	fragID := uint16(atomic.AddUint32(&globalFragmentID, 1))
 
 	var fragments [][]byte
 	for i := 0; i < len(data); i += maxSize {

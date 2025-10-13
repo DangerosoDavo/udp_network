@@ -37,6 +37,7 @@ type Connection struct {
 	sendWindow   map[uint32]*Packet
 	sendWindowMu sync.RWMutex
 	windowSize   uint32
+	windowCond   *sync.Cond // Condition variable for window availability
 
 	// Fragment reassembly
 	fragments   map[uint16]*FragmentBuffer
@@ -63,7 +64,7 @@ type Connection struct {
 }
 
 func NewConnection(addr *net.UDPAddr) *Connection {
-	return &Connection{
+	c := &Connection{
 		Addr:         addr,
 		state:        StateNew,
 		sendWindow:   make(map[uint32]*Packet),
@@ -77,6 +78,9 @@ func NewConnection(addr *net.UDPAddr) *Connection {
 		cwnd:         1.0,
 		ssthresh:     16.0,
 	}
+	// Initialize condition variable with sendWindowMu
+	c.windowCond = sync.NewCond(&c.sendWindowMu)
+	return c
 }
 
 func (c *Connection) updateRTT(sampleRTT time.Duration) {
@@ -152,6 +156,8 @@ func (c *Connection) removeFromSendWindow(seqNum uint32) {
 	defer c.sendWindowMu.Unlock()
 
 	delete(c.sendWindow, seqNum)
+	// Signal that window space is available
+	c.windowCond.Signal()
 }
 
 func (c *Connection) getRetransmissions() []*Packet {
@@ -265,12 +271,21 @@ func (c *Connection) ProcessBitmapAck(baseSeq uint32, bitmap uint64) {
 	defer c.sendWindowMu.Unlock()
 
 	// Remove acknowledged packets
+	removed := 0
 	for i := uint32(0); i < 64; i++ {
 		if bitmap&(1<<i) != 0 {
 			seqNum := baseSeq + i
-			delete(c.sendWindow, seqNum)
-			c.onAck()
+			if _, exists := c.sendWindow[seqNum]; exists {
+				delete(c.sendWindow, seqNum)
+				removed++
+				c.onAck()
+			}
 		}
+	}
+
+	// Signal if any packets were removed
+	if removed > 0 {
+		c.windowCond.Broadcast()
 	}
 }
 
@@ -279,6 +294,13 @@ func (c *Connection) GetState() ConnectionState {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.state
+}
+
+// SetState sets the connection state (for WebSocket and other transports)
+func (c *Connection) SetState(state ConnectionState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state = state
 }
 
 // SetMessageCallback sets the callback for received messages
