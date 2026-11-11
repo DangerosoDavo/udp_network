@@ -32,6 +32,8 @@ type WebSocketClient struct {
 	dialCancel         context.CancelFunc
 	epoch              uint64
 	customHandler      func(*protocol.Message)
+	rawHandler         func([]byte)
+	borrowedRawHandler func([]byte)
 	codec              *protocol.MessageCodec
 	timeout, keepAlive time.Duration
 	options            ClientOptions
@@ -139,8 +141,14 @@ func (c *WebSocketClient) Stop() {
 
 func (c *WebSocketClient) readLoop(session *webSocketClientSession, timeout time.Duration) {
 	defer session.close()
+	var buffer []byte
+	var probe [1]byte
 	for {
-		kind, data, err := session.ws.ReadMessage()
+		kind, reader, err := session.ws.NextReader()
+		if err != nil {
+			return
+		}
+		buffer, err = readWebSocketFrame(reader, buffer, probe[:], c.options.MaxMessageBytes)
 		if err != nil {
 			return
 		}
@@ -148,15 +156,26 @@ func (c *WebSocketClient) readLoop(session *webSocketClientSession, timeout time
 		if kind != websocket.TextMessage && kind != websocket.BinaryMessage {
 			continue
 		}
-		msg, err := c.codec.Decode(data)
-		if err != nil {
-			return
-		}
 		c.mu.RLock()
 		handler := c.customHandler
+		rawHandler := c.rawHandler
+		borrowedRawHandler := c.borrowedRawHandler
 		current := c.session == session
 		c.mu.RUnlock()
 		if !current {
+			return
+		}
+		if borrowedRawHandler != nil {
+			borrowedRawHandler(buffer)
+			continue
+		}
+		if rawHandler != nil {
+			// Owned raw delivery remains independent of the next read's buffer.
+			rawHandler(append([]byte(nil), buffer...))
+			continue
+		}
+		msg, err := c.codec.Decode(buffer)
+		if err != nil {
 			return
 		}
 		if handler != nil {
@@ -252,6 +271,40 @@ func (c *WebSocketClient) SendJSON(data interface{}) error {
 func (c *WebSocketClient) SetMessageHandler(handler func(*protocol.Message)) {
 	c.mu.Lock()
 	c.customHandler = handler
+	c.mu.Unlock()
+}
+
+// SetRawMessageHandler selects raw frame delivery instead of MessageCodec
+// decoding. A non-nil raw handler takes precedence over SetMessageHandler;
+// setting it to nil restores decoded delivery when no borrowed handler is set.
+// Text and binary messages share
+// this path. The caller must validate the complete envelope and its payload.
+//
+// Each buffer belongs to that received frame and is not reused by the client,
+// so the handler may retain it. Delivery remains synchronous and ordered on the
+// reader goroutine, with the same frame-size limit and read deadline. Handlers
+// must return promptly: processing time consumes the next read's timeout and
+// prevents that reader from processing ping/pong control frames.
+func (c *WebSocketClient) SetRawMessageHandler(handler func([]byte)) {
+	c.mu.Lock()
+	c.rawHandler = handler
+	c.mu.Unlock()
+}
+
+// SetBorrowedRawMessageHandler selects allocation-efficient raw frame delivery.
+// It takes precedence over owned raw and decoded handlers. Setting it to nil
+// restores whichever of those handlers is configured.
+//
+// The buffer is valid only until the callback returns and must not be retained
+// or used by another goroutine. Copy it before retaining data. The client may
+// overwrite it immediately after return. Delivery is synchronous, ordered and
+// subject to the same size limits and read deadline as the other handlers. The
+// caller must validate the complete envelope and payload before using them.
+// The reader retains its grown buffer, bounded by MaxMessageBytes, until that
+// connection's read loop ends.
+func (c *WebSocketClient) SetBorrowedRawMessageHandler(handler func([]byte)) {
+	c.mu.Lock()
+	c.borrowedRawHandler = handler
 	c.mu.Unlock()
 }
 func (c *WebSocketClient) SetKeepAlive(timeout, interval time.Duration) {

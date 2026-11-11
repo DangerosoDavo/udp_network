@@ -47,6 +47,29 @@ at a trusted reverse proxy; the default listener serves plain WS. Clients accept
 `wss://` URLs and `ClientOptions.TLSConfig`. Same-origin checking is enabled by
 default; use an explicit `CheckOrigin` policy if browser access needs other origins.
 
+### Typed application WebSocket schemas
+
+`WebSocketClient.SetMessageHandler` retains its decoded `protocol.Message` API.
+Applications with their own checked wire schema can avoid generic interface/map
+decoding with either raw receive callback:
+
+- `SetRawMessageHandler(func([]byte))` delivers an owned frame; it can be retained.
+- `SetBorrowedRawMessageHandler(func([]byte))` delivers a reader-owned frame valid
+  only until the callback returns. Decode synchronously or copy before retaining
+  or passing it to another goroutine. The reader reuses a buffer bounded by
+  `ClientOptions.MaxMessageBytes`.
+
+Borrowed delivery takes precedence over owned raw delivery, which takes precedence
+over decoded delivery. Set a handler to `nil` to restore the next configured mode.
+Both text and binary WebSocket messages use these callbacks. Raw delivery does
+not validate the application envelope: the caller must validate the complete
+message, its types, bounds and semantics before using it.
+
+All modes keep ordered synchronous callbacks, frame-size limits, read deadlines
+and heartbeat behavior. Callback work consumes the next read's timeout budget
+and delays control-frame processing; return promptly. These APIs reduce copying
+and decoding work, without changing delivery or timeout guarantees.
+
 ## Authenticated UDP
 
 Legacy constructors without credentials now return `protocol.ErrPSKRequired`.
