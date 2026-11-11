@@ -1,301 +1,182 @@
 package udp_network
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/DangerosoDavo/udp_network/protocol"
 )
 
-// LargeStringOptions contains options for sending large strings
+// LargeStringOptions configures application chunking. Successful progress means
+// locally queued chunks; it is not a remote completion acknowledgement.
 type LargeStringOptions struct {
-	TransferID    string                 // Optional custom transfer ID
-	Metadata      map[string]interface{} // Optional metadata
-	OnProgress    func(sent, total int)  // Progress callback
-	RetryAttempts int                    // Number of retry attempts per chunk (default: 3)
-	ChunkTimeout  time.Duration          // Timeout per chunk (default: 5s)
+	TransferID string
+	Metadata   map[string]interface{}
+	OnProgress func(sent, total int)
+	// Deprecated: retransmission belongs to the transport. Retained for source
+	// compatibility; does not add application retries.
+	RetryAttempts int
+	// Maximum local queue time per chunk (default 5 seconds).
+	ChunkTimeout time.Duration
 }
 
-// SendLargeString sends a large string using chunked transfer
-func (c *Client) SendLargeString(largeString string, options *LargeStringOptions) error {
-	if c.Connection == nil {
-		return fmt.Errorf("not connected")
+func sendLargeString(text string, options *LargeStringOptions, send func(context.Context, *protocol.Message) error) error {
+	var opts LargeStringOptions
+	if options != nil {
+		opts = *options
 	}
-
-	// Default options
-	if options == nil {
-		options = &LargeStringOptions{}
+	if opts.ChunkTimeout < 0 {
+		return fmt.Errorf("negative chunk timeout")
 	}
-	if options.RetryAttempts == 0 {
-		options.RetryAttempts = 3
+	if opts.ChunkTimeout == 0 {
+		opts.ChunkTimeout = 5 * time.Second
 	}
-	if options.ChunkTimeout == 0 {
-		options.ChunkTimeout = 5 * time.Second
-	}
-
-	// Generate chunks
-	chunks, err := protocol.ChunkString(largeString, options.TransferID, options.Metadata)
+	chunks, err := protocol.ChunkString(text, opts.TransferID, opts.Metadata)
 	if err != nil {
-		return fmt.Errorf("failed to chunk string: %v", err)
+		return err
 	}
-
-	fmt.Printf("📦 Sending large string in %d chunks (%.2f MB total)\n",
-		len(chunks), float64(len(largeString))/(1024*1024))
-
-	// Send chunks with retry logic
 	for i, chunk := range chunks {
-		sent := false
-
-		for attempt := 0; attempt < options.RetryAttempts; attempt++ {
-			msg := &protocol.Message{
-				Type:      protocol.MessageTypeChunked,
-				ID:        fmt.Sprintf("%s_%d", chunk.Metadata.TransferID, i),
-				Timestamp: time.Now().Unix(),
-				Data:      chunk,
-			}
-
-			if err := c.handler.SendMessage(c.Connection, msg); err != nil {
-				if attempt < options.RetryAttempts-1 {
-					fmt.Printf("⚠️  Chunk %d/%d failed (attempt %d), retrying...\n",
-						i+1, len(chunks), attempt+1)
-					time.Sleep(time.Second)
-					continue
-				}
-				return fmt.Errorf("failed to send chunk %d after %d attempts: %v",
-					i, options.RetryAttempts, err)
-			}
-
-			sent = true
-			break
+		msg := &protocol.Message{Type: protocol.MessageTypeChunked, ID: fmt.Sprintf("%s_%d", chunk.Metadata.TransferID, i), Timestamp: time.Now().Unix(), Data: chunk}
+		ctx, cancel := context.WithTimeout(context.Background(), opts.ChunkTimeout)
+		err := send(ctx, msg)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("queue chunk %d: %w", i, err)
 		}
-
-		if !sent {
-			return fmt.Errorf("failed to send chunk %d", i)
-		}
-
-		// Progress callback
-		if options.OnProgress != nil {
-			options.OnProgress(i+1, len(chunks))
-		}
-
-		// Small delay between chunks to avoid overwhelming the network
-		if i < len(chunks)-1 {
-			time.Sleep(10 * time.Millisecond)
+		if opts.OnProgress != nil {
+			opts.OnProgress(i+1, len(chunks))
 		}
 	}
-
-	fmt.Printf("✅ Large string sent successfully (%d chunks)\n", len(chunks))
 	return nil
 }
 
-// SendLargeString sends a large string using chunked transfer (secure version)
-func (c *SecureClient) SendLargeString(largeString string, options *LargeStringOptions) error {
-	if c.conn == nil {
+func (c *Client) SendLargeString(text string, options *LargeStringOptions) error {
+	c.mu.Lock()
+	conn := c.Connection
+	c.mu.Unlock()
+	if conn == nil {
 		return fmt.Errorf("not connected")
 	}
-
-	// Default options
-	if options == nil {
-		options = &LargeStringOptions{}
-	}
-	if options.RetryAttempts == 0 {
-		options.RetryAttempts = 3
-	}
-	if options.ChunkTimeout == 0 {
-		options.ChunkTimeout = 5 * time.Second
-	}
-
-	// Generate chunks
-	chunks, err := protocol.ChunkString(largeString, options.TransferID, options.Metadata)
-	if err != nil {
-		return fmt.Errorf("failed to chunk string: %v", err)
-	}
-
-	fmt.Printf("🔐 Sending large string securely in %d chunks (%.2f MB total)\n",
-		len(chunks), float64(len(largeString))/(1024*1024))
-
-	// Send chunks with retry logic
-	for i, chunk := range chunks {
-		sent := false
-
-		for attempt := 0; attempt < options.RetryAttempts; attempt++ {
-			msg := &protocol.Message{
-				Type:      protocol.MessageTypeChunked,
-				ID:        fmt.Sprintf("%s_%d", chunk.Metadata.TransferID, i),
-				Timestamp: time.Now().Unix(),
-				Data:      chunk,
-			}
-
-			if err := c.SendMessage(msg); err != nil {
-				if attempt < options.RetryAttempts-1 {
-					fmt.Printf("⚠️  Chunk %d/%d failed (attempt %d), retrying...\n",
-						i+1, len(chunks), attempt+1)
-					time.Sleep(time.Second)
-					continue
-				}
-				return fmt.Errorf("failed to send chunk %d after %d attempts: %v",
-					i, options.RetryAttempts, err)
-			}
-
-			sent = true
-			break
-		}
-
-		if !sent {
-			return fmt.Errorf("failed to send chunk %d", i)
-		}
-
-		// Progress callback
-		if options.OnProgress != nil {
-			options.OnProgress(i+1, len(chunks))
-		}
-
-		// Small delay between chunks
-		if i < len(chunks)-1 {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
-	fmt.Printf("✅ Large string sent securely (%d chunks)\n", len(chunks))
-	return nil
+	return sendLargeString(text, options, func(ctx context.Context, msg *protocol.Message) error {
+		return c.handler.SendMessageContext(ctx, conn, msg)
+	})
 }
 
-// LargeStringReceiver handles receiving large strings
+func (c *SecureClient) SendLargeString(text string, options *LargeStringOptions) error {
+	return sendLargeString(text, options, c.SendMessageContext)
+}
+
 type LargeStringReceiver struct {
 	reassembler *protocol.ChunkReassembler
 	handlers    map[string]func(string, map[string]interface{})
 	mu          sync.RWMutex
 }
 
-// NewLargeStringReceiver creates a new large string receiver
 func NewLargeStringReceiver() *LargeStringReceiver {
-	lsr := &LargeStringReceiver{
-		reassembler: protocol.NewChunkReassembler(),
-		handlers:    make(map[string]func(string, map[string]interface{})),
-	}
-
-	// Set up completion callback
-	lsr.reassembler.SetCompleteCallback(func(transferID string, data []byte, metadata map[string]interface{}) {
-		lsr.handleComplete(transferID, string(data), metadata)
+	receiver := &LargeStringReceiver{reassembler: protocol.NewChunkReassembler(), handlers: make(map[string]func(string, map[string]interface{}))}
+	receiver.reassembler.SetCompleteCallback(func(id string, data []byte, metadata map[string]interface{}) {
+		receiver.handleComplete(id, string(data), metadata)
 	})
-
-	return lsr
+	return receiver
+}
+func (r *LargeStringReceiver) SetHandler(id string, handler func(string, map[string]interface{})) {
+	r.mu.Lock()
+	r.handlers[id] = handler
+	r.mu.Unlock()
+}
+func (r *LargeStringReceiver) SetDefaultHandler(handler func(string, map[string]interface{})) {
+	r.SetHandler("*", handler)
 }
 
-// SetHandler sets a handler for completed large string transfers
-func (lsr *LargeStringReceiver) SetHandler(transferID string, handler func(string, map[string]interface{})) {
-	lsr.mu.Lock()
-	defer lsr.mu.Unlock()
-	lsr.handlers[transferID] = handler
-}
-
-// SetDefaultHandler sets a default handler for all transfers
-func (lsr *LargeStringReceiver) SetDefaultHandler(handler func(string, map[string]interface{})) {
-	lsr.mu.Lock()
-	defer lsr.mu.Unlock()
-	lsr.handlers["*"] = handler
-}
-
-// ProcessChunkedMessage processes a chunked message
-func (lsr *LargeStringReceiver) ProcessChunkedMessage(msg *protocol.Message) error {
-	chunk, ok := msg.Data.(*protocol.ChunkedMessage)
-	if !ok {
-		// Try to convert from map if it was deserialized
-		if _, ok := msg.Data.(map[string]interface{}); ok {
-			// Convert map back to ChunkedMessage
-			// This would need proper type conversion logic
-			return fmt.Errorf("chunk data conversion not implemented")
-		}
-		return fmt.Errorf("invalid chunk data type")
+func decodeChunk(msg *protocol.Message) (*protocol.ChunkedMessage, error) {
+	if msg == nil || msg.Type != protocol.MessageTypeChunked {
+		return nil, fmt.Errorf("expected chunked message")
 	}
-
-	return lsr.reassembler.AddChunk(chunk)
-}
-
-// GetTransferStatus returns the status of a transfer
-func (lsr *LargeStringReceiver) GetTransferStatus(transferID string) (received, total int, exists bool) {
-	return lsr.reassembler.GetTransferStatus(transferID)
-}
-
-// GetStats returns statistics for all active transfers
-func (lsr *LargeStringReceiver) GetStats() []protocol.ChunkedTransferStats {
-	return lsr.reassembler.GetStats()
-}
-
-// handleComplete is called when a transfer completes
-func (lsr *LargeStringReceiver) handleComplete(transferID string, data string, metadata map[string]interface{}) {
-	lsr.mu.RLock()
-	handler, exists := lsr.handlers[transferID]
-	if !exists {
-		handler = lsr.handlers["*"] // Try default handler
+	if chunk, ok := msg.Data.(*protocol.ChunkedMessage); ok && chunk != nil {
+		copy := *chunk
+		return &copy, nil
 	}
-	lsr.mu.RUnlock()
+	if chunk, ok := msg.Data.(protocol.ChunkedMessage); ok {
+		return &chunk, nil
+	}
+	// JSON interface values have map shape. Decode through the real schema,
+	// preserving metadata and numeric range validation performed by encoding/json.
+	data, err := json.Marshal(msg.Data)
+	if err != nil {
+		return nil, err
+	}
+	var chunk protocol.ChunkedMessage
+	if err := json.Unmarshal(data, &chunk); err != nil {
+		return nil, fmt.Errorf("decode chunk: %w", err)
+	}
+	return &chunk, nil
+}
 
+func (r *LargeStringReceiver) ProcessChunkedMessage(msg *protocol.Message) error {
+	return r.ProcessChunkedMessageFrom("", msg)
+}
+
+// ProcessChunkedMessageFrom isolates reassembly by authenticated caller-provided
+// peer/session scope. The scope must not be taken from untrusted message data.
+func (r *LargeStringReceiver) ProcessChunkedMessageFrom(scope string, msg *protocol.Message) error {
+	chunk, err := decodeChunk(msg)
+	if err != nil {
+		return err
+	}
+	if strings.ContainsRune(scope, '\x00') || strings.ContainsRune(chunk.Metadata.TransferID, '\x00') {
+		return fmt.Errorf("invalid transfer scope")
+	}
+	if scope != "" {
+		chunk.Metadata.TransferID = scope + "\x00" + chunk.Metadata.TransferID
+	}
+	return r.reassembler.AddChunk(chunk)
+}
+func (r *LargeStringReceiver) GetTransferStatus(id string) (int, int, bool) {
+	return r.reassembler.GetTransferStatus(id)
+}
+func (r *LargeStringReceiver) GetStats() []protocol.ChunkedTransferStats {
+	return r.reassembler.GetStats()
+}
+
+func (r *LargeStringReceiver) Close() { r.reassembler.Close() }
+func (r *LargeStringReceiver) handleComplete(id, data string, metadata map[string]interface{}) {
+	if index := strings.IndexByte(id, 0); index >= 0 {
+		id = id[index+1:]
+	}
+	r.mu.Lock()
+	handler := r.handlers[id]
+	if handler == nil {
+		handler = r.handlers["*"]
+	}
+	delete(r.handlers, id)
+	r.mu.Unlock()
 	if handler != nil {
 		handler(data, metadata)
 	}
-
-	// Clean up specific handler
-	lsr.mu.Lock()
-	delete(lsr.handlers, transferID)
-	lsr.mu.Unlock()
 }
-
-// EnableLargeStringReceiver enables large string receiving for a server
 func EnableLargeStringReceiver(s *Server) *LargeStringReceiver {
 	receiver := NewLargeStringReceiver()
-
-	// Override or extend the message handler to process chunks
 	s.SetMessageHandler(func(conn *protocol.Connection, msg *protocol.Message) {
 		if msg.Type == protocol.MessageTypeChunked {
-			if err := receiver.ProcessChunkedMessage(msg); err != nil {
-				fmt.Printf("Error processing chunk: %v\n", err)
-			}
-
-			// Get status
-			if chunk, ok := msg.Data.(*protocol.ChunkedMessage); ok {
-				received, total, _ := receiver.GetTransferStatus(chunk.Metadata.TransferID)
-				fmt.Printf("📦 Transfer %s: %d/%d chunks received\n",
-					chunk.Metadata.TransferID[:8], received, total)
-			}
+			_ = receiver.ProcessChunkedMessageFrom(conn.Addr.String(), msg)
 		} else {
-			// Handle other message types normally
 			s.handleMessage(conn, msg)
 		}
 	})
-
 	return receiver
 }
-
-// EnableLargeStringReceiverSecure enables large string receiving for a secure server
 func EnableLargeStringReceiverSecure(s *SecureServer) *LargeStringReceiver {
 	receiver := NewLargeStringReceiver()
-
-	// Set up message handler to process chunks
+	codec := protocol.NewMessageCodec()
 	s.OnMessage(func(conn *protocol.Connection, data []byte) {
-		// Parse the message
-		handler := protocol.NewMessageHandler(s.GetTransport().Transport)
-		msg, err := handler.ParseMessage(data)
-		if err != nil {
-			fmt.Printf("Error parsing message: %v\n", err)
-			return
+		msg, err := codec.Decode(data)
+		if err == nil && msg.Type == protocol.MessageTypeChunked {
+			_ = receiver.ProcessChunkedMessageFrom(conn.Addr.String(), msg)
 		}
-
-		if msg.Type == protocol.MessageTypeChunked {
-			if err := receiver.ProcessChunkedMessage(msg); err != nil {
-				fmt.Printf("Error processing chunk: %v\n", err)
-			}
-
-			// Get status
-			if chunk, ok := msg.Data.(*protocol.ChunkedMessage); ok {
-				received, total, _ := receiver.GetTransferStatus(chunk.Metadata.TransferID)
-				fmt.Printf("🔐📦 Transfer %s: %d/%d chunks received\n",
-					chunk.Metadata.TransferID[:8], received, total)
-			}
-		}
-		// Note: Other message types can be handled by additional logic if needed
 	})
-
 	return receiver
 }

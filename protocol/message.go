@@ -1,14 +1,16 @@
 package protocol
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"sync/atomic"
-
 	"github.com/DangerosoDavo/udp_network/tokenizer"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
-// Global fragment ID counter to prevent collisions
 var globalFragmentID uint32
 
 type MessageType string
@@ -28,200 +30,208 @@ type Message struct {
 	Data      interface{}            `json:"data"`
 	Metadata  map[string]interface{} `json:"meta,omitempty"`
 }
-
 type MessageCodec struct {
 	tokenizer *tokenizer.Tokenizer
 }
 
 func NewMessageCodec() *MessageCodec {
-	return &MessageCodec{
-		tokenizer: tokenizer.NewTokenizer(),
-	}
+	return &MessageCodec{tokenizer: tokenizer.NewTokenizer()}
+}
+
+type tokenEnvelope struct {
+	Type      MessageType            `json:"t"`
+	Data      []byte                 `json:"d"`
+	Tokenized bool                   `json:"tk"`
+	ID        string                 `json:"id,omitempty"`
+	Timestamp int64                  `json:"ts,omitempty"`
+	Metadata  map[string]interface{} `json:"meta,omitempty"`
 }
 
 func (mc *MessageCodec) Encode(msg *Message) ([]byte, error) {
-	// For text messages, try tokenization first
+	if msg == nil || msg.Type == "" {
+		return nil, errors.New("message type required")
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
 	if msg.Type == MessageTypeText {
 		if text, ok := msg.Data.(string); ok {
-			// Check if tokenization provides good compression
-			tokens := mc.tokenizer.Encode(text)
-			tokenData := mc.tokenizer.EncodeTokensToBinary(tokens)
-
-			// Create a lightweight wrapper
-			wrapper := map[string]interface{}{
-				"t":  string(msg.Type),
-				"d":  tokenData,
-				"tk": true, // tokenized flag
+			if len(text) > MaxMessageSize {
+				return nil, errors.New("text message too large")
 			}
-
-			if msg.ID != "" {
-				wrapper["id"] = msg.ID
+			tokens := mc.tokenizer.EncodeTokensToBinary(mc.tokenizer.Encode(text))
+			compressed, err := json.Marshal(tokenEnvelope{msg.Type, tokens, true, msg.ID, msg.Timestamp, msg.Metadata})
+			if err != nil {
+				return nil, err
 			}
-			if msg.Timestamp > 0 {
-				wrapper["ts"] = msg.Timestamp
-			}
-
-			// Compare sizes
-			jsonData, _ := json.Marshal(msg)
-			wrapperData, _ := json.Marshal(wrapper)
-
-			if len(wrapperData) < len(jsonData) {
-				return wrapperData, nil
+			if len(compressed) < len(data) {
+				data = compressed
 			}
 		}
 	}
-
-	// Fall back to regular JSON encoding
-	return json.Marshal(msg)
+	if len(data) > MaxMessageSize {
+		return nil, errors.New("encoded message too large")
+	}
+	return data, nil
 }
 
+// Decode uses RawMessage for the payload so normal messages avoid the previous
+// full map parse followed by a second full parse. JSON numeric Data values retain
+// encoding/json's float64 convention; use typed schemas/string IDs for uint64 IDs.
 func (mc *MessageCodec) Decode(data []byte) (*Message, error) {
-	// Try to decode as wrapper first
-	var wrapper map[string]interface{}
-	if err := json.Unmarshal(data, &wrapper); err != nil {
+	if len(data) > MaxMessageSize {
+		return nil, errors.New("encoded message too large")
+	}
+	var wire struct {
+		Type      MessageType            `json:"type"`
+		ID        string                 `json:"id"`
+		Timestamp int64                  `json:"ts"`
+		Data      json.RawMessage        `json:"data"`
+		Metadata  map[string]interface{} `json:"meta"`
+		Tokenized bool                   `json:"tk"`
+		TokenType MessageType            `json:"t"`
+		TokenData []byte                 `json:"d"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, err
 	}
-
-	// Check if it's tokenized
-	if tk, ok := wrapper["tk"].(bool); ok && tk {
-		if tokenData, ok := wrapper["d"].([]byte); ok {
-			tokens := mc.tokenizer.DecodeTokensFromBinary(tokenData)
-			text := mc.tokenizer.Decode(tokens)
-
-			msg := &Message{
-				Type: MessageType(wrapper["t"].(string)),
-				Data: text,
-			}
-
-			if id, ok := wrapper["id"].(string); ok {
-				msg.ID = id
-			}
-			if ts, ok := wrapper["ts"].(float64); ok {
-				msg.Timestamp = int64(ts)
-			}
-
-			return msg, nil
+	msg := &Message{Type: wire.Type, ID: wire.ID, Timestamp: wire.Timestamp, Metadata: wire.Metadata}
+	if wire.Tokenized {
+		if wire.Type != "" || wire.TokenType != MessageTypeText || wire.TokenData == nil || len(wire.TokenData)%2 != 0 {
+			return nil, errors.New("invalid tokenized envelope")
+		}
+		tokens := mc.tokenizer.DecodeTokensFromBinary(wire.TokenData)
+		text, err := mc.tokenizer.DecodeChecked(tokens)
+		if err != nil {
+			return nil, fmt.Errorf("invalid tokenized text: %w", err)
+		}
+		if len(text) > MaxMessageSize {
+			return nil, errors.New("decoded text too large")
+		}
+		msg.Type = wire.TokenType
+		msg.Data = text
+		return msg, nil
+	}
+	if msg.Type == "" {
+		return nil, errors.New("message type required")
+	}
+	if len(wire.Data) > 0 {
+		if err := json.Unmarshal(wire.Data, &msg.Data); err != nil {
+			return nil, err
 		}
 	}
-
-	// Fall back to regular message decoding
-	var msg Message
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return nil, err
-	}
-
-	return &msg, nil
+	return msg, nil
 }
 
-// FragmentMessage splits large messages into fragments
+// FragmentMessage returns no fragments for invalid size or a message exceeding
+// the wire's 255-fragment limit. Fragments alias data; Transport.Send takes a copy.
 func FragmentMessage(data []byte, maxSize int) ([][]byte, uint16) {
+	if maxSize <= 0 {
+		return nil, 0
+	}
+	count := (len(data) + maxSize - 1) / maxSize
+	if count > 255 {
+		return nil, 0
+	}
 	if len(data) <= maxSize {
 		return [][]byte{data}, 0
 	}
-
-	// Generate unique fragment ID using atomic counter to prevent collisions
-	fragID := uint16(atomic.AddUint32(&globalFragmentID, 1))
-
-	var fragments [][]byte
+	id := uint16(atomic.AddUint32(&globalFragmentID, 1))
+	fragments := make([][]byte, 0, count)
 	for i := 0; i < len(data); i += maxSize {
-		end := i + maxSize
-		if end > len(data) {
-			end = len(data)
-		}
+		end := min(i+maxSize, len(data))
 		fragments = append(fragments, data[i:end])
 	}
-
-	return fragments, fragID
+	return fragments, id
 }
 
-// ReassembleMessage combines fragments back into original message
 type FragmentAssembler struct {
+	mu        sync.Mutex
 	fragments map[uint16]map[uint8][]byte
 	totals    map[uint16]uint8
+	firstSeen map[uint16]time.Time
+	bytes     int
 }
 
 func NewFragmentAssembler() *FragmentAssembler {
-	return &FragmentAssembler{
-		fragments: make(map[uint16]map[uint8][]byte),
-		totals:    make(map[uint16]uint8),
-	}
+	return &FragmentAssembler{fragments: make(map[uint16]map[uint8][]byte), totals: make(map[uint16]uint8), firstSeen: make(map[uint16]time.Time)}
 }
-
-func (fa *FragmentAssembler) AddFragment(fragID uint16, offset uint8, total uint8, data []byte) ([]byte, bool) {
-	if _, exists := fa.fragments[fragID]; !exists {
-		fa.fragments[fragID] = make(map[uint8][]byte)
-		fa.totals[fragID] = total
-	}
-
-	fa.fragments[fragID][offset] = data
-
-	// Check if we have all fragments
-	if len(fa.fragments[fragID]) == int(total) {
-		// Reassemble
-		var result []byte
-		for i := uint8(0); i < total; i++ {
-			result = append(result, fa.fragments[fragID][i]...)
+func (fa *FragmentAssembler) AddFragment(id uint16, offset, total uint8, data []byte) ([]byte, bool) {
+	fa.mu.Lock()
+	defer fa.mu.Unlock()
+	for key, first := range fa.firstSeen {
+		if time.Since(first) > 30*time.Second {
+			for _, b := range fa.fragments[key] {
+				fa.bytes -= len(b)
+			}
+			delete(fa.fragments, key)
+			delete(fa.totals, key)
+			delete(fa.firstSeen, key)
 		}
-
-		// Clean up
-		delete(fa.fragments, fragID)
-		delete(fa.totals, fragID)
-
-		return result, true
 	}
-
-	return nil, false
+	if total == 0 || offset >= total || len(data) > MaxPayloadSize {
+		return nil, false
+	}
+	if fa.fragments[id] == nil {
+		if len(fa.fragments) >= maxFragmentTransfers {
+			return nil, false
+		}
+		fa.fragments[id] = make(map[uint8][]byte)
+		fa.totals[id] = total
+		fa.firstSeen[id] = time.Now()
+	}
+	if fa.totals[id] != total {
+		return nil, false
+	}
+	if _, exists := fa.fragments[id][offset]; exists {
+		return nil, false
+	}
+	if fa.bytes+len(data) > maxReassemblyBytes {
+		return nil, false
+	}
+	fa.fragments[id][offset] = append([]byte(nil), data...)
+	fa.bytes += len(data)
+	if len(fa.fragments[id]) != int(total) {
+		return nil, false
+	}
+	var result []byte
+	for i := uint8(0); i < total; i++ {
+		part := fa.fragments[id][i]
+		result = append(result, part...)
+		fa.bytes -= len(part)
+	}
+	delete(fa.fragments, id)
+	delete(fa.totals, id)
+	delete(fa.firstSeen, id)
+	return result, true
 }
 
-// High-level message operations
 type MessageHandler struct {
 	codec     *MessageCodec
 	transport *Transport
 	assembler *FragmentAssembler
 }
 
-func NewMessageHandler(transport *Transport) *MessageHandler {
-	return &MessageHandler{
-		codec:     NewMessageCodec(),
-		transport: transport,
-		assembler: NewFragmentAssembler(),
-	}
+func NewMessageHandler(t *Transport) *MessageHandler {
+	return &MessageHandler{NewMessageCodec(), t, NewFragmentAssembler()}
 }
-
-func (mh *MessageHandler) SendMessage(conn *Connection, msg *Message) error {
-	// Encode message
+func (mh *MessageHandler) SendMessage(c *Connection, msg *Message) error {
+	return mh.SendMessageContext(mh.transport.ctx, c, msg)
+}
+func (mh *MessageHandler) SendMessageContext(ctx context.Context, c *Connection, msg *Message) error {
 	data, err := mh.codec.Encode(msg)
 	if err != nil {
 		return fmt.Errorf("encode error: %w", err)
 	}
-
-	// Fragment if necessary
-	fragments, _ := FragmentMessage(data, MaxPayloadSize)
-
-	// Send fragments
-	for _, fragment := range fragments {
-		// Send the fragment - transport.Send will create the packet
-		if err := mh.transport.Send(conn, fragment); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return mh.transport.SendContext(ctx, c, data)
 }
-
-func (mh *MessageHandler) SetMessageCallback(conn *Connection, callback func(*Message)) {
-	conn.onMessage = func(data []byte) {
-		// Check if this is a fragment
-		// This would normally come from packet metadata
-		// For now, try to decode directly
+func (mh *MessageHandler) SetMessageCallback(c *Connection, fn func(*Message)) {
+	c.SetMessageCallback(func(data []byte) {
 		msg, err := mh.codec.Decode(data)
-		if err == nil && callback != nil {
-			callback(msg)
+		if err == nil && fn != nil {
+			fn(msg)
 		}
-	}
+	})
 }
-
-// ParseMessage parses a message from raw bytes
-func (mh *MessageHandler) ParseMessage(data []byte) (*Message, error) {
-	return mh.codec.Decode(data)
-}
+func (mh *MessageHandler) ParseMessage(data []byte) (*Message, error) { return mh.codec.Decode(data) }

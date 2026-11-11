@@ -218,6 +218,7 @@ func TestConnectionFragmentReassembly(t *testing.T) {
 
 	// Add fragments
 	for _, frag := range fragments {
+		frag.SeqNum = uint32(frag.FragOffset)
 		conn.AddFragment(frag)
 	}
 
@@ -268,6 +269,7 @@ func TestConnectionFragmentConcurrent(t *testing.T) {
 					FragTotal:  total,
 					Payload:    []byte{byte(id), offset},
 				}
+				packet.SeqNum = uint32(packet.FragOffset)
 				conn.AddFragment(packet)
 				time.Sleep(time.Millisecond)
 			}
@@ -278,7 +280,7 @@ func TestConnectionFragmentConcurrent(t *testing.T) {
 
 	// Wait for all reassemblies
 	timeout := time.After(3 * time.Second)
-	for receivedCount < goroutines {
+	for delivered := 0; delivered < goroutines; delivered++ {
 		select {
 		case <-received:
 			// Continue
@@ -305,6 +307,7 @@ func TestConnectionFragmentCleanup(t *testing.T) {
 			FragTotal:  2, // Only add first of 2 fragments
 			Payload:    []byte("incomplete"),
 		}
+		packet.SeqNum = uint32(packet.FragOffset)
 		conn.AddFragment(packet)
 	}
 
@@ -441,6 +444,7 @@ func BenchmarkConnectionFragmentAdd(b *testing.B) {
 				FragTotal:  3,
 				Payload:    []byte{byte(i), offset},
 			}
+			packet.SeqNum = uint32(packet.FragOffset)
 			conn.AddFragment(packet)
 		}
 	}

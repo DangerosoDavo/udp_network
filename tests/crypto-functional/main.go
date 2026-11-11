@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"sync"
 	"time"
@@ -49,14 +50,14 @@ func testBasicCommunication() {
 	client.Send(conn, []byte("Hello, UDP!"))
 
 	wg.Wait()
-	fmt.Println("✓ Basic communication successful\n")
+	fmt.Println("✓ Basic communication successful")
 }
 
 func testSecureCommunication() {
 	fmt.Println("Testing encrypted communication...")
 
 	// Start server
-	server, err := protocol.NewSecureTransport(":8083")
+	server, err := protocol.NewSecureTransportWithPSK(":8083", exampleconfig.PSK())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -75,7 +76,7 @@ func testSecureCommunication() {
 	defer server.Stop()
 
 	// Start client
-	client, err := protocol.NewSecureTransport(":0")
+	client, err := protocol.NewSecureTransportWithPSK(":0", exampleconfig.PSK())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func testSecureCommunication() {
 	client.SendSecure(conn, []byte("Hello, Secure UDP!"))
 
 	wg.Wait()
-	fmt.Println("✓ Encrypted communication successful\n")
+	fmt.Println("✓ Encrypted communication successful")
 }
 
 func main() {

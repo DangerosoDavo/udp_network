@@ -15,6 +15,8 @@ type Server struct {
 	startTime     time.Time
 	clientsMu     sync.RWMutex
 	customHandler func(*protocol.Connection, *protocol.Message)
+	onConnect     func(*protocol.Connection)
+	onDisconnect  func(*protocol.Connection)
 }
 
 func NewServer(address string) (*Server, error) {
@@ -58,12 +60,21 @@ func (s *Server) onClientConnect(conn *protocol.Connection) {
 
 	// Set up message handler
 	s.handler.SetMessageCallback(conn, func(msg *protocol.Message) {
-		if s.customHandler != nil {
-			s.customHandler(conn, msg)
+		s.clientsMu.RLock()
+		handler := s.customHandler
+		s.clientsMu.RUnlock()
+		if handler != nil {
+			handler(conn, msg)
 		} else {
 			s.handleMessage(conn, msg)
 		}
 	})
+	s.clientsMu.RLock()
+	callback := s.onConnect
+	s.clientsMu.RUnlock()
+	if callback != nil {
+		callback(conn)
+	}
 
 	// Send welcome message
 	welcome := &protocol.Message{
@@ -85,10 +96,18 @@ func (s *Server) onClientDisconnect(conn *protocol.Connection) {
 	clientID := conn.Addr.String()
 
 	s.clientsMu.Lock()
-	delete(s.clients, clientID)
+	if s.clients[clientID] == conn {
+		delete(s.clients, clientID)
+	}
 	s.clientsMu.Unlock()
 
 	log.Printf("Client disconnected: %s", clientID)
+	s.clientsMu.RLock()
+	callback := s.onDisconnect
+	s.clientsMu.RUnlock()
+	if callback != nil {
+		callback(conn)
+	}
 }
 
 func (s *Server) handleMessage(conn *protocol.Connection, msg *protocol.Message) {
@@ -166,7 +185,7 @@ func (s *Server) handleCommand(conn *protocol.Connection, cmd string) {
 
 func (s *Server) sendStats(conn *protocol.Connection) {
 	stats := map[string]interface{}{
-		"clients":    len(s.clients),
+		"clients":    len(s.Clients()),
 		"uptime":     time.Since(s.startTime).Seconds(),
 		"serverTime": time.Now().Format(time.RFC3339),
 	}
@@ -181,8 +200,9 @@ func (s *Server) sendStats(conn *protocol.Connection) {
 }
 
 func (s *Server) sendClientList(conn *protocol.Connection) {
-	clients := make([]string, 0, len(s.clients))
-	for addr := range s.clients {
+	snapshot := s.Clients()
+	clients := make([]string, 0, len(snapshot))
+	for addr := range snapshot {
 		clients = append(clients, addr)
 	}
 
@@ -213,15 +233,13 @@ func (s *Server) broadcast(message string, sender *protocol.Connection) {
 	}
 
 	// Send to all clients except sender
-	s.clientsMu.RLock()
 	recipients := 0
-	for _, client := range s.clients {
+	for _, client := range s.Clients() {
 		if client != sender {
 			s.handler.SendMessage(client, broadcastMsg)
 			recipients++
 		}
 	}
-	s.clientsMu.RUnlock()
 
 	// Confirm to sender
 	confirmMsg := &protocol.Message{
@@ -238,33 +256,14 @@ func (s *Server) broadcast(message string, sender *protocol.Connection) {
 
 // SetMessageHandler allows overriding the message handler
 func (s *Server) SetMessageHandler(handler func(*protocol.Connection, *protocol.Message)) {
-	// Store custom handler
+	s.clientsMu.Lock()
 	s.customHandler = handler
-
-	// Update OnConnect to use custom handler
-	s.transport.OnConnect = func(conn *protocol.Connection) {
-		s.clientsMu.Lock()
-		s.clients[conn.Addr.String()] = conn
-		s.clientsMu.Unlock()
-
-		log.Printf("Client connected: %s", conn.Addr.String())
-
-		s.handler.SetMessageCallback(conn, func(msg *protocol.Message) {
-			if s.customHandler != nil {
-				s.customHandler(conn, msg)
-			} else {
-				s.handleMessage(conn, msg)
-			}
-		})
-	}
+	s.clientsMu.Unlock()
 }
 
 // Broadcast sends a message to all connected clients
 func (s *Server) Broadcast(msg *protocol.Message) {
-	s.clientsMu.RLock()
-	defer s.clientsMu.RUnlock()
-
-	for _, client := range s.clients {
+	for _, client := range s.Clients() {
 		s.handler.SendMessage(client, msg)
 	}
 }
@@ -304,29 +303,13 @@ func (s *Server) GetClientCount() int {
 
 // SetKeepAlive configures connection timeout and keep-alive settings
 func (s *Server) SetKeepAlive(timeout, interval time.Duration) {
-	s.transport.ConnTimeout = timeout
-	s.transport.KeepAliveInterval = interval
+	s.transport.SetKeepAlive(timeout, interval)
 }
 
 // SetConnectionCallbacks allows game logic to hook into connection events
 func (s *Server) SetConnectionCallbacks(onConnect, onDisconnect func(*protocol.Connection)) {
-	if onConnect != nil {
-		existingConnect := s.transport.OnConnect
-		s.transport.OnConnect = func(conn *protocol.Connection) {
-			if existingConnect != nil {
-				existingConnect(conn)
-			}
-			onConnect(conn)
-		}
-	}
-
-	if onDisconnect != nil {
-		existingDisconnect := s.transport.OnDisconnect
-		s.transport.OnDisconnect = func(conn *protocol.Connection) {
-			if existingDisconnect != nil {
-				existingDisconnect(conn)
-			}
-			onDisconnect(conn)
-		}
-	}
+	s.clientsMu.Lock()
+	s.onConnect = onConnect
+	s.onDisconnect = onDisconnect
+	s.clientsMu.Unlock()
 }

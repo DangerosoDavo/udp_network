@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -93,7 +94,7 @@ func testUnencrypted() (delivered int64, duration time.Duration, err error) {
 
 func testEncrypted() (delivered int64, duration time.Duration, err error) {
 	// Start server transport
-	serverTransport, err := protocol.NewSecureTransport(":8081")
+	serverTransport, err := protocol.NewSecureTransportWithPSK(":8081", exampleconfig.PSK())
 	if err != nil {
 		return 0, 0, err
 	}
@@ -115,7 +116,7 @@ func testEncrypted() (delivered int64, duration time.Duration, err error) {
 	defer serverTransport.Stop()
 
 	// Start client transport
-	clientTransport, err := protocol.NewSecureTransport(":0")
+	clientTransport, err := protocol.NewSecureTransportWithPSK(":0", exampleconfig.PSK())
 	if err != nil {
 		return 0, 0, err
 	}

@@ -1,6 +1,9 @@
 package udp_network
 
 import (
+	"crypto/tls"
+	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/DangerosoDavo/udp_network/protocol"
@@ -93,14 +96,21 @@ type ServerOptions struct {
 	Timeout       time.Duration
 	KeepAlive     time.Duration
 	EnableLogging bool
+	// WebSocket limits; zero selects bounded defaults.
+	MaxPendingMessages int
+	MaxMessageBytes    int64
+	CheckOrigin        func(*http.Request) bool
+	TLSConfig          *tls.Config
 }
 
 // ClientOptions allows configuring client creation
 type ClientOptions struct {
-	Transport     TransportType
-	Timeout       time.Duration
-	KeepAlive     time.Duration
-	EnableLogging bool
+	Transport       TransportType
+	Timeout         time.Duration
+	KeepAlive       time.Duration
+	EnableLogging   bool
+	MaxMessageBytes int64
+	TLSConfig       *tls.Config
 }
 
 // NewUnifiedServer creates a server with the specified transport type
@@ -114,9 +124,7 @@ func NewUnifiedServer(address string, options *ServerOptions) (UnifiedServer, er
 	switch options.Transport {
 	case TransportWebSocket:
 		return NewWebSocketServer(address, options)
-	case TransportUDP:
-		fallthrough
-	default:
+	case TransportUDP, "":
 		server, err := NewServer(address)
 		if err != nil {
 			return nil, err
@@ -139,6 +147,8 @@ func NewUnifiedServer(address string, options *ServerOptions) (UnifiedServer, er
 		}
 
 		return &udpServerAdapter{Server: server}, nil
+	default:
+		return nil, fmt.Errorf("unsupported transport %q", options.Transport)
 	}
 }
 
@@ -153,9 +163,7 @@ func NewUnifiedClient(options *ClientOptions) (UnifiedClient, error) {
 	switch options.Transport {
 	case TransportWebSocket:
 		return NewWebSocketClient(options)
-	case TransportUDP:
-		fallthrough
-	default:
+	case TransportUDP, "":
 		client, err := NewClient()
 		if err != nil {
 			return nil, err
@@ -175,6 +183,8 @@ func NewUnifiedClient(options *ClientOptions) (UnifiedClient, error) {
 		}
 
 		return &udpClientAdapter{Client: client}, nil
+	default:
+		return nil, fmt.Errorf("unsupported transport %q", options.Transport)
 	}
 }
 

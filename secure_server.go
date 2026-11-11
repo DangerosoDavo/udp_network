@@ -18,7 +18,15 @@ type SecureServer struct {
 }
 
 func NewSecureServer(address string) (*SecureServer, error) {
-	transport, err := protocol.NewSecureTransport(address)
+	return nil, protocol.ErrPSKRequired
+}
+
+func NewSecureServerWithPSK(address string, psk []byte) (*SecureServer, error) {
+	return NewSecureServerWithConfig(address, protocol.SecureConfig{PSK: psk})
+}
+
+func NewSecureServerWithConfig(address string, config protocol.SecureConfig) (*SecureServer, error) {
+	transport, err := protocol.NewSecureTransportWithConfig(address, config)
 	if err != nil {
 		return nil, err
 	}
@@ -44,8 +52,11 @@ func (s *SecureServer) onConnect(conn *protocol.Connection) {
 
 	// Set up message callback
 	conn.SetMessageCallback(func(data []byte) {
-		if s.messageHandler != nil {
-			s.messageHandler(conn, data)
+		s.clientsMu.RLock()
+		handler := s.messageHandler
+		s.clientsMu.RUnlock()
+		if handler != nil {
+			handler(conn, data)
 		}
 	})
 }
@@ -68,6 +79,8 @@ func (s *SecureServer) Stop() {
 }
 
 func (s *SecureServer) OnMessage(handler func(*protocol.Connection, []byte)) {
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
 	s.messageHandler = handler
 }
 

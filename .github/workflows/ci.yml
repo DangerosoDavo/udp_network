@@ -1,0 +1,39 @@
+name: Networking CI
+on: [push, pull_request]
+jobs:
+  validate:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./... -count=1 -timeout=120s
+        env:
+          CGO_ENABLED: '1'
+      - name: Build standalone example module
+        run: go test -race ./...
+        working-directory: example-project
+      - name: Known reachable vulnerability scan
+        if: runner.os == 'Linux'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: Fuzz packet decoder
+        if: runner.os == 'Linux'
+        run: go test -run '^$' -fuzz '^FuzzPacketDecode$' -fuzztime=10s ./protocol
+      - name: Fuzz message decoder
+        if: runner.os == 'Linux'
+        run: go test -run '^$' -fuzz '^FuzzMessageDecode$' -fuzztime=10s ./protocol
+      - name: Record codec and tokenizer samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -run '^$' -bench '^BenchmarkMaintenanceCodecDecode$' -benchmem -count=3 ./protocol > codec-benchmarks.txt
+          go test -run '^$' -bench '^BenchmarkEncode' -benchmem -count=3 ./tokenizer > tokenizer-benchmarks.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-${{ runner.os }}
+          path: '*-benchmarks.txt'

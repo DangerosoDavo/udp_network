@@ -1,3 +1,5 @@
+> Historical documentation: API, security, size and performance claims below may describe pre-v2 behavior. Follow the [current README](README.md) and [migration notes](MAINTENANCE.md) for supported contracts.
+
 # Large String Support in UDP Network
 
 This module now supports sending strings much larger than the UDP packet size limit (65KB) by implementing automatic chunking and reassembly.

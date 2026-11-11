@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"time"
 
@@ -38,7 +39,7 @@ func main() {
 	if *secure {
 		// Test secure server
 		fmt.Println("🔐 Creating secure client...")
-		client, err := udp_network.NewSecureClient()
+		client, err := udp_network.NewSecureClientWithPSK(exampleconfig.PSK())
 		if err != nil {
 			log.Fatal("Failed to create secure client:", err)
 		}
@@ -54,13 +55,13 @@ func main() {
 		for i := 1; i <= *count; i++ {
 			message := fmt.Sprintf("Secure test message %d from remote client", i)
 			fmt.Printf("📤 Sending encrypted message %d: %s\n", i, message)
-			
+
 			if err := client.SendText(message); err != nil {
 				fmt.Printf("❌ Failed to send message %d: %v\n", i, err)
 			} else {
 				fmt.Printf("✅ Message %d sent successfully\n", i)
 			}
-			
+
 			time.Sleep(500 * time.Millisecond)
 		}
 
@@ -71,7 +72,7 @@ func main() {
 		if err != nil {
 			log.Fatal("Failed to create client:", err)
 		}
-		
+
 		client.Start()
 		defer client.Stop()
 
@@ -85,20 +86,20 @@ func main() {
 		for i := 1; i <= *count; i++ {
 			message := fmt.Sprintf("Test message %d from remote client", i)
 			fmt.Printf("📤 Sending message %d: %s\n", i, message)
-			
+
 			if err := client.SendText(message); err != nil {
 				fmt.Printf("❌ Failed to send message %d: %v\n", i, err)
 			} else {
 				fmt.Printf("✅ Message %d sent successfully\n", i)
 			}
-			
+
 			time.Sleep(500 * time.Millisecond)
 		}
 
 		// Test some server commands
 		fmt.Println("\n🔧 Testing server commands...")
 		commands := []string{"ping", "time", "stats"}
-		
+
 		for _, cmd := range commands {
 			fmt.Printf("📤 Sending command: %s\n", cmd)
 			if err := client.SendText(cmd); err != nil {

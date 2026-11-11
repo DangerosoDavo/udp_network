@@ -7,9 +7,11 @@ import (
 )
 
 const (
-	MagicNumber    uint16 = 0x5544 // "UD" in hex
-	HeaderSize            = 16
-	MaxPayloadSize        = 1400 // Safe UDP payload size
+	MagicNumber        uint16 = 0x5545 // Wire v2; deliberately incompatible with old peers.
+	HeaderSize                = 24
+	MaxPayloadSize            = 1100 // Leaves space for authenticated transport wrapping.
+	MaxWirePayloadSize        = 1200
+	MaxMessageSize            = 255 * MaxPayloadSize
 )
 
 type PacketType uint8
@@ -23,6 +25,7 @@ const (
 	TypeBitmapAck       PacketType = 0x06
 	TypeCryptoHandshake PacketType = 0x07
 	TypeEncrypted       PacketType = 0x08
+	TypeClose           PacketType = 0x09
 )
 
 type PacketFlags uint8
@@ -33,6 +36,8 @@ const (
 	FlagTokenized  PacketFlags = 0x04
 	FlagLastFrag   PacketFlags = 0x08
 	FlagEncrypted  PacketFlags = 0x10
+	// UnreliableSequenced packets use a separate sequence space and are never ACKed.
+	FlagUnreliableSequenced PacketFlags = 0x20
 )
 
 type Packet struct {
@@ -45,11 +50,45 @@ type Packet struct {
 	FragTotal  uint8
 	Payload    []byte
 	Timestamp  time.Time
+	SessionID  uint64
+	retries    uint8 // local bookkeeping, never serialized
+}
+
+func (p *Packet) validate() error {
+	if p.Type < TypeData || p.Type > TypeClose {
+		return errors.New("unknown packet type")
+	}
+	limit := MaxPayloadSize
+	if p.Type == TypeEncrypted {
+		limit = MaxWirePayloadSize
+	}
+	if len(p.Payload) > limit {
+		return errors.New("payload too large")
+	}
+	if p.Flags & ^(FlagFragment|FlagCompressed|FlagTokenized|FlagLastFrag|FlagEncrypted|FlagUnreliableSequenced) != 0 {
+		return errors.New("unknown packet flags")
+	}
+	if p.IsFragment() && (p.FragTotal < 2 || p.FragOffset >= p.FragTotal || p.Flags&FlagUnreliableSequenced != 0) {
+		return errors.New("invalid fragment metadata")
+	}
+	if !p.IsFragment() && (p.FragTotal != 0 || p.FragOffset != 0 || p.FragmentID != 0 || p.Flags&FlagLastFrag != 0) {
+		return errors.New("unexpected fragment metadata")
+	}
+	if p.Type != TypeData && p.Type != TypeEncrypted && p.Flags != 0 {
+		return errors.New("invalid control flags")
+	}
+	if (p.Type == TypeAck || p.Type == TypeNack || p.Type == TypeKeepAlive || p.Type == TypeHandshake || p.Type == TypeClose) && len(p.Payload) != 0 {
+		return errors.New("unexpected control payload")
+	}
+	if p.Type == TypeBitmapAck && len(p.Payload) != 8 {
+		return errors.New("invalid bitmap ACK")
+	}
+	return nil
 }
 
 func (p *Packet) Marshal() ([]byte, error) {
-	if len(p.Payload) > MaxPayloadSize {
-		return nil, errors.New("payload too large")
+	if err := p.validate(); err != nil {
+		return nil, err
 	}
 
 	buf := make([]byte, HeaderSize+len(p.Payload))
@@ -62,6 +101,7 @@ func (p *Packet) Marshal() ([]byte, error) {
 	binary.BigEndian.PutUint16(buf[12:14], p.FragmentID)
 	buf[14] = p.FragOffset
 	buf[15] = p.FragTotal
+	binary.BigEndian.PutUint64(buf[16:24], p.SessionID)
 
 	copy(buf[HeaderSize:], p.Payload)
 
@@ -87,6 +127,12 @@ func Unmarshal(data []byte) (*Packet, error) {
 		FragOffset: data[14],
 		FragTotal:  data[15],
 		Timestamp:  time.Now(),
+		SessionID:  binary.BigEndian.Uint64(data[16:24]),
+	}
+	// Validate the length and header before allocating attacker-controlled payload.
+	p.Payload = data[HeaderSize:]
+	if err := p.validate(); err != nil {
+		return nil, err
 	}
 
 	if len(data) > HeaderSize {

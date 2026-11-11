@@ -1,3 +1,5 @@
+> Historical documentation: API, security, size and performance claims below may describe pre-v2 behavior. Follow the [current README](README.md) and [migration notes](MAINTENANCE.md) for supported contracts.
+
 # UDP Network Package - API Reference
 
 Complete API documentation for the UDP Network package - a reliable UDP protocol implementation with encryption support.

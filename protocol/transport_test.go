@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"sync"
 	"testing"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestTransportCreateAndStop(t *testing.T) {
-	transport, err := NewTransport(":0")
+	transport, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport() failed: %v", err)
 	}
@@ -28,7 +29,7 @@ func TestTransportCreateAndStop(t *testing.T) {
 }
 
 func TestTransportMaxConnections(t *testing.T) {
-	transport, err := NewTransport(":0")
+	transport, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport() failed: %v", err)
 	}
@@ -40,7 +41,7 @@ func TestTransportMaxConnections(t *testing.T) {
 	// Create more than max connections
 	clients := make([]*Transport, 10)
 	for i := 0; i < 10; i++ {
-		client, err := NewTransport(":0")
+		client, err := NewTransport("127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("Failed to create client %d: %v", i, err)
 		}
@@ -79,7 +80,7 @@ func TestTransportMaxConnections(t *testing.T) {
 
 func TestTransportSendReceive(t *testing.T) {
 	// Create server
-	server, err := NewTransport(":0")
+	server, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(server) failed: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestTransportSendReceive(t *testing.T) {
 	serverAddr := server.conn.LocalAddr().String()
 
 	// Create client
-	client, err := NewTransport(":0")
+	client, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(client) failed: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestTransportSendReceive(t *testing.T) {
 }
 
 func TestTransportFragmentation(t *testing.T) {
-	server, err := NewTransport(":0")
+	server, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(server) failed: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestTransportFragmentation(t *testing.T) {
 	server.Start()
 	serverAddr := server.conn.LocalAddr().String()
 
-	client, err := NewTransport(":0")
+	client, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(client) failed: %v", err)
 	}
@@ -178,7 +179,7 @@ func TestTransportFragmentation(t *testing.T) {
 }
 
 func TestTransportConcurrentSends(t *testing.T) {
-	server, err := NewTransport(":0")
+	server, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(server) failed: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestTransportConcurrentSends(t *testing.T) {
 	server.Start()
 	serverAddr := server.conn.LocalAddr().String()
 
-	client, err := NewTransport(":0")
+	client, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(client) failed: %v", err)
 	}
@@ -233,7 +234,7 @@ func TestTransportConcurrentSends(t *testing.T) {
 
 	// Wait for all messages to be received
 	timeout := time.After(5 * time.Second)
-	for receivedCount < numMessages {
+	for delivered := 0; delivered < numMessages; delivered++ {
 		select {
 		case <-received:
 			// Continue
@@ -247,12 +248,13 @@ func TestTransportConcurrentSends(t *testing.T) {
 }
 
 func TestTransportConnectionTimeout(t *testing.T) {
-	transport, err := NewTransport(":0")
+	transport, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport() failed: %v", err)
 	}
 	defer transport.Stop()
 
+	transport.SetKeepAlive(100*time.Millisecond, 0)
 	transport.Start()
 
 	// Create a connection manually
@@ -279,7 +281,7 @@ func TestTransportConnectionTimeout(t *testing.T) {
 }
 
 func TestTransportCallbacks(t *testing.T) {
-	transport, err := NewTransport(":0")
+	transport, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport() failed: %v", err)
 	}
@@ -300,7 +302,7 @@ func TestTransportCallbacks(t *testing.T) {
 	serverAddr := transport.conn.LocalAddr().String()
 
 	// Create client
-	client, err := NewTransport(":0")
+	client, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(client) failed: %v", err)
 	}
@@ -324,7 +326,7 @@ func TestTransportCallbacks(t *testing.T) {
 	// Close connection
 	transport.connMu.Lock()
 	for _, c := range transport.connections {
-		c.state = StateClosed
+		c.SetState(StateClosed)
 	}
 	transport.connMu.Unlock()
 
@@ -336,7 +338,7 @@ func TestTransportCallbacks(t *testing.T) {
 }
 
 func TestTransportWindowFlowControl(t *testing.T) {
-	server, err := NewTransport(":0")
+	server, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(server) failed: %v", err)
 	}
@@ -358,7 +360,7 @@ func TestTransportWindowFlowControl(t *testing.T) {
 	server.Start()
 	serverAddr := server.conn.LocalAddr().String()
 
-	client, err := NewTransport(":0")
+	client, err := NewTransport("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewTransport(client) failed: %v", err)
 	}
@@ -384,7 +386,7 @@ func TestTransportWindowFlowControl(t *testing.T) {
 
 	// Wait for all to be received
 	timeout := time.After(10 * time.Second)
-	for receivedCount < numMessages {
+	for delivered := 0; delivered < numMessages; delivered++ {
 		select {
 		case <-received:
 			// Continue
@@ -406,52 +408,58 @@ func TestTransportWindowFlowControl(t *testing.T) {
 	}
 }
 
-func BenchmarkTransportSend(b *testing.B) {
-	server, _ := NewTransport(":0")
-	server.Start()
-	defer server.Stop()
-
-	client, _ := NewTransport(":0")
-	client.Start()
-	defer client.Stop()
-
-	conn, _ := client.Connect(server.conn.LocalAddr().String())
-	time.Sleep(200 * time.Millisecond)
-
-	data := make([]byte, 1400)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = client.Send(conn, data)
+// Both benchmarks measure delivered, reliable UDP messages with bounded
+// stop-and-wait application queues. They include loopback/kernel/ACK costs;
+// they are not pure codec benchmarks or estimates of internet capacity.
+func BenchmarkTransportSend(b *testing.B)    { benchmarkTransportDelivered(b, 1100) }
+func BenchmarkTransportReceive(b *testing.B) { benchmarkTransportDelivered(b, 1100) }
+func benchmarkTransportDelivered(b *testing.B, size int) {
+	server, err := NewTransport("127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
 	}
-}
-
-func BenchmarkTransportReceive(b *testing.B) {
-	server, _ := NewTransport(":0")
-	received := make(chan bool, b.N)
-	server.OnConnect = func(conn *Connection) {
-		conn.SetMessageCallback(func(data []byte) {
-			received <- true
+	defer server.Stop()
+	client, err := NewTransport("127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Stop()
+	received := make(chan int, 1)
+	server.OnConnect = func(c *Connection) {
+		c.SetMessageCallback(func(data []byte) {
+			select {
+			case received <- len(data):
+			case <-server.ctx.Done():
+			}
 		})
 	}
 	server.Start()
-	defer server.Stop()
-
-	client, _ := NewTransport(":0")
 	client.Start()
-	defer client.Stop()
-
-	conn, _ := client.Connect(server.conn.LocalAddr().String())
-	time.Sleep(200 * time.Millisecond)
-
-	data := make([]byte, 1400)
-
+	c, err := client.Connect(server.conn.LocalAddr().String())
+	if err != nil {
+		b.Fatal(err)
+	}
+	data := make([]byte, size)
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	b.ReportAllocs()
+	b.SetBytes(int64(size))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = client.Send(conn, data)
+		ctx, cancel := context.WithTimeout(client.ctx, 5*time.Second)
+		err = client.SendContext(ctx, c, data)
+		cancel()
+		if err != nil {
+			b.Fatal(err)
+		}
+		select {
+		case n := <-received:
+			if n != size {
+				b.Fatal("payload size mismatch")
+			}
+		case <-deadline.C:
+			b.Fatal("delivery benchmark exceeded 30s deadline")
+		}
 	}
-
-	for i := 0; i < b.N; i++ {
-		<-received
-	}
+	b.StopTimer()
 }

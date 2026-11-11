@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"sort"
 	"strings"
@@ -105,7 +106,7 @@ func testPerformance(address string, isSecure bool) (*PerformanceStats, error) {
 
 	if isSecure {
 		// Test secure connection
-		client, err := udp_network.NewSecureClient()
+		client, err := udp_network.NewSecureClientWithPSK(exampleconfig.PSK())
 		if err != nil {
 			return stats, fmt.Errorf("failed to create secure client: %v", err)
 		}

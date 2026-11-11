@@ -2,6 +2,7 @@ package udp_network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -13,360 +14,371 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// WebSocketServer implements UnifiedServer using WebSockets
+var ErrBackpressure = errors.New("websocket outbound queue full")
+
+// WebSocketServer uses one bounded writer per peer. SendMessage success means
+// queued locally, not acknowledged by the remote application.
 type WebSocketServer struct {
-	address       string
-	server        *http.Server
-	upgrader      websocket.Upgrader
-	clients       map[string]*WebSocketConnection
-	clientsMu     sync.RWMutex
-	handler       func(*protocol.Connection, *protocol.Message)
-	onConnect     func(*protocol.Connection)
-	onDisconnect  func(*protocol.Connection)
-	maxClients    int
-	timeout       time.Duration
-	keepAlive     time.Duration
-	startTime     time.Time
-	codec         *protocol.MessageCodec
-	enableLogging bool
+	address                 string
+	server                  *http.Server
+	listener                net.Listener
+	upgrader                websocket.Upgrader
+	clients                 map[string]*WebSocketConnection
+	clientsMu               sync.RWMutex
+	mu                      sync.RWMutex
+	handler                 func(*protocol.Connection, *protocol.Message)
+	onConnect, onDisconnect func(*protocol.Connection)
+	maxClients              int
+	timeout, keepAlive      time.Duration
+	startTime               time.Time
+	codec                   *protocol.MessageCodec
+	enableLogging           bool
+	options                 ServerOptions
+	started, stopped        bool
+	pending                 int
 }
 
-// WebSocketConnection wraps a websocket connection to match protocol.Connection interface
 type WebSocketConnection struct {
 	*protocol.Connection
-	ws           *websocket.Conn
-	writeMu      sync.Mutex
-	lastActivity time.Time
-	server       *WebSocketServer
+	ws        *websocket.Conn
+	server    *WebSocketServer
+	outbound  chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
+	clientID  string
 }
 
-// NewWebSocketServer creates a new WebSocket server
 func NewWebSocketServer(address string, options *ServerOptions) (*WebSocketServer, error) {
-	if options == nil {
-		options = &ServerOptions{}
+	var opts ServerOptions
+	if options != nil {
+		opts = *options
 	}
-
-	s := &WebSocketServer{
-		address:   address,
-		clients:   make(map[string]*WebSocketConnection),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins - configure based on your security needs
-			},
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-		},
-		maxClients:    options.MaxClients,
-		timeout:       options.Timeout,
-		keepAlive:     options.KeepAlive,
-		codec:         protocol.NewMessageCodec(),
-		enableLogging: options.EnableLogging,
+	if opts.MaxClients < 0 || opts.Timeout < 0 || opts.KeepAlive < 0 || opts.MaxPendingMessages < 0 || opts.MaxMessageBytes < 0 {
+		return nil, fmt.Errorf("websocket limits must be nonnegative")
 	}
-
-	// Default timeouts
-	if s.timeout == 0 {
-		s.timeout = 30 * time.Second
+	if opts.MaxClients == 0 {
+		opts.MaxClients = 1024
 	}
-	if s.keepAlive == 0 {
-		s.keepAlive = 10 * time.Second
+	if opts.Timeout == 0 {
+		opts.Timeout = 30 * time.Second
 	}
-
+	if opts.KeepAlive == 0 {
+		opts.KeepAlive = 10 * time.Second
+	}
+	if opts.MaxPendingMessages == 0 {
+		opts.MaxPendingMessages = 256
+	}
+	if opts.MaxMessageBytes == 0 {
+		opts.MaxMessageBytes = 1 << 20
+	}
+	if opts.KeepAlive >= opts.Timeout {
+		return nil, fmt.Errorf("keepalive must be shorter than timeout")
+	}
+	s := &WebSocketServer{address: address, clients: make(map[string]*WebSocketConnection), maxClients: opts.MaxClients, timeout: opts.Timeout, keepAlive: opts.KeepAlive, codec: protocol.NewMessageCodec(), enableLogging: opts.EnableLogging, options: opts}
+	s.upgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096, CheckOrigin: opts.CheckOrigin}
+	// A nil CheckOrigin retains Gorilla's same-origin default.
 	return s, nil
 }
 
 func (s *WebSocketServer) Start() {
-	s.startTime = time.Now()
+	if err := s.StartWithError(); err != nil && s.enableLogging {
+		log.Printf("websocket start: %v", err)
+	}
+}
 
+// StartWithError binds synchronously, making readiness and bind failures observable.
+func (s *WebSocketServer) StartWithError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return fmt.Errorf("server stopped; construct a new server")
+	}
+	if s.started {
+		return nil
+	}
+	listener, err := net.Listen("tcp", s.address)
+	if err != nil {
+		return err
+	}
+	s.listener = listener
+	s.startTime = time.Now()
+	s.started = true
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWebSocket)
-
-	s.server = &http.Server{
-		Addr:    s.address,
-		Handler: mux,
+	s.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: s.timeout, MaxHeaderBytes: 16 << 10}
+	if s.options.TLSConfig != nil {
+		s.server.TLSConfig = s.options.TLSConfig.Clone()
 	}
-
+	httpServer := s.server
 	go func() {
-		if s.enableLogging {
-			log.Printf("WebSocket server starting on %s", s.address)
+		var serveErr error
+		if httpServer.TLSConfig != nil {
+			serveErr = httpServer.ServeTLS(listener, "", "")
+		} else {
+			serveErr = httpServer.Serve(listener)
 		}
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("WebSocket server error: %v", err)
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && s.enableLogging {
+			log.Printf("websocket serve: %v", serveErr)
 		}
 	}()
+	return nil
+}
 
-	// Start maintenance loop
-	go s.maintenanceLoop()
+func (s *WebSocketServer) Addr() net.Addr {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
 }
 
 func (s *WebSocketServer) Stop() {
-	if s.enableLogging {
-		log.Println("WebSocket server shutting down...")
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
 	}
-
-	// Close all client connections
-	s.clientsMu.Lock()
-	for _, client := range s.clients {
-		client.ws.Close()
+	s.stopped = true
+	httpServer := s.server
+	s.mu.Unlock()
+	s.clientsMu.RLock()
+	peers := make([]*WebSocketConnection, 0, len(s.clients))
+	for _, peer := range s.clients {
+		peers = append(peers, peer)
 	}
-	s.clients = make(map[string]*WebSocketConnection)
-	s.clientsMu.Unlock()
-
-	// Shutdown HTTP server
-	if s.server != nil {
+	s.clientsMu.RUnlock()
+	for _, peer := range peers {
+		peer.close()
+	}
+	if httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.server.Shutdown(ctx)
+		_ = httpServer.Shutdown(ctx)
 	}
 }
 
 func (s *WebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Check connection limit
-	s.clientsMu.RLock()
-	currentClients := len(s.clients)
-	s.clientsMu.RUnlock()
-
-	if s.maxClients > 0 && currentClients >= s.maxClients {
-		http.Error(w, "Connection limit reached", http.StatusServiceUnavailable)
+	// Reserve capacity without holding a global lock during network I/O.
+	s.clientsMu.Lock()
+	s.mu.RLock()
+	stopped, maxClients := s.stopped, s.maxClients
+	s.mu.RUnlock()
+	if stopped || len(s.clients)+s.pending >= maxClients {
+		s.clientsMu.Unlock()
+		http.Error(w, "connection limit reached", http.StatusServiceUnavailable)
 		return
 	}
-
-	// Upgrade connection
-	ws, err := s.upgrader.Upgrade(w, r, nil)
+	s.pending++
+	s.clientsMu.Unlock()
+	defer func() { s.clientsMu.Lock(); s.pending--; s.clientsMu.Unlock() }()
+	upgrader := s.upgrader
+	upgrader.HandshakeTimeout = 5 * time.Second
+	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		if s.enableLogging {
-			log.Printf("WebSocket upgrade error: %v", err)
-		}
 		return
 	}
-
-	// Create connection wrapper
-	remoteAddr := &net.UDPAddr{
-		IP:   net.ParseIP(r.RemoteAddr),
-		Port: 0, // WebSocket doesn't have meaningful port
+	// Preserve source port: multiple players can share a public IP.
+	addr, err := net.ResolveUDPAddr("udp", r.RemoteAddr)
+	if err != nil {
+		_ = ws.Close()
+		return
 	}
-	if remoteAddr.IP == nil {
-		// Fallback for address parsing
-		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		remoteAddr.IP = net.ParseIP(host)
-	}
-
-	conn := protocol.NewConnection(remoteAddr)
+	conn := protocol.NewConnection(addr)
 	conn.SetState(protocol.StateConnected)
-
-	wsConn := &WebSocketConnection{
-		Connection:   conn,
-		ws:           ws,
-		lastActivity: time.Now(),
-		server:       s,
-	}
-
-	clientID := remoteAddr.String()
+	peer := &WebSocketConnection{Connection: conn, ws: ws, server: s, outbound: make(chan []byte, s.options.MaxPendingMessages), done: make(chan struct{}), clientID: r.RemoteAddr}
 	s.clientsMu.Lock()
-	s.clients[clientID] = wsConn
+	s.mu.RLock()
+	stopped = s.stopped
+	s.mu.RUnlock()
+	if stopped {
+		s.clientsMu.Unlock()
+		_ = ws.Close()
+		return
+	}
+	s.clients[peer.clientID] = peer
 	s.clientsMu.Unlock()
-
-	if s.enableLogging {
-		log.Printf("WebSocket client connected: %s", clientID)
+	go peer.writeLoop()
+	s.mu.RLock()
+	connected := s.onConnect
+	s.mu.RUnlock()
+	if connected != nil {
+		connected(conn)
 	}
-
-	// Trigger onConnect callback
-	if s.onConnect != nil {
-		s.onConnect(conn)
-	}
-
-	// Start handling messages
-	go wsConn.readLoop()
-
-	// Send welcome message
-	welcome := &protocol.Message{
-		Type:      protocol.MessageTypeJSON,
-		Timestamp: time.Now().Unix(),
-		Data: map[string]interface{}{
-			"event":     "welcome",
-			"server":    "UDP Network WebSocket Server v1.0",
-			"time":      time.Now().Format(time.RFC3339),
-			"transport": "websocket",
-		},
-	}
-	s.SendMessage(conn, welcome)
+	_ = s.SendMessage(conn, &protocol.Message{Type: protocol.MessageTypeJSON, Timestamp: time.Now().Unix(), Data: map[string]interface{}{"event": "welcome", "transport": "websocket"}})
+	go peer.readLoop()
 }
 
-func (wsConn *WebSocketConnection) readLoop() {
-	defer func() {
-		wsConn.ws.Close()
-		wsConn.server.removeClient(wsConn)
-	}()
-
-	wsConn.ws.SetReadDeadline(time.Now().Add(wsConn.server.timeout))
-	wsConn.ws.SetPongHandler(func(string) error {
-		wsConn.ws.SetReadDeadline(time.Now().Add(wsConn.server.timeout))
-		wsConn.lastActivity = time.Now()
-		return nil
+func (peer *WebSocketConnection) close() {
+	peer.closeOnce.Do(func() {
+		close(peer.done)
+		_ = peer.ws.Close()
+		peer.SetState(protocol.StateClosed)
+		s := peer.server
+		s.clientsMu.Lock()
+		if s.clients[peer.clientID] == peer {
+			delete(s.clients, peer.clientID)
+		}
+		s.clientsMu.Unlock()
+		s.mu.RLock()
+		disconnected := s.onDisconnect
+		s.mu.RUnlock()
+		if disconnected != nil {
+			disconnected(peer.Connection)
+		}
 	})
+}
 
+func (peer *WebSocketConnection) readLoop() {
+	defer peer.close()
+	s := peer.server
+	peer.ws.SetReadLimit(s.options.MaxMessageBytes)
+	refresh := func() {
+		s.mu.RLock()
+		timeout := s.timeout
+		s.mu.RUnlock()
+		_ = peer.ws.SetReadDeadline(time.Now().Add(timeout))
+	}
+	refresh()
+	peer.ws.SetPongHandler(func(string) error { refresh(); return nil })
 	for {
-		messageType, data, err := wsConn.ws.ReadMessage()
+		kind, data, err := peer.ws.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				if wsConn.server.enableLogging {
-					log.Printf("WebSocket read error: %v", err)
-				}
-			}
-			break
+			return
 		}
-
-		wsConn.lastActivity = time.Now()
-		wsConn.ws.SetReadDeadline(time.Now().Add(wsConn.server.timeout))
-
-		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
-			// Decode message
-			msg, err := wsConn.server.codec.Decode(data)
-			if err != nil {
-				if wsConn.server.enableLogging {
-					log.Printf("Message decode error: %v", err)
-				}
-				continue
-			}
-
-			// Handle message
-			if wsConn.server.handler != nil {
-				wsConn.server.handler(wsConn.Connection, msg)
-			}
+		refresh()
+		if kind != websocket.TextMessage && kind != websocket.BinaryMessage {
+			continue
+		}
+		msg, err := s.codec.Decode(data)
+		if err != nil {
+			return
+		}
+		s.mu.RLock()
+		handler := s.handler
+		s.mu.RUnlock()
+		if handler != nil {
+			handler(peer.Connection, msg)
 		}
 	}
 }
 
-func (s *WebSocketServer) removeClient(wsConn *WebSocketConnection) {
-	clientID := wsConn.Addr.String()
-
-	s.clientsMu.Lock()
-	delete(s.clients, clientID)
-	s.clientsMu.Unlock()
-
-	if s.enableLogging {
-		log.Printf("WebSocket client disconnected: %s", clientID)
-	}
-
-	// Trigger onDisconnect callback
-	if s.onDisconnect != nil {
-		s.onDisconnect(wsConn.Connection)
-	}
-}
-
-func (s *WebSocketServer) maintenanceLoop() {
-	ticker := time.NewTicker(s.keepAlive)
+func (peer *WebSocketConnection) writeLoop() {
+	defer peer.close()
+	peer.server.mu.RLock()
+	interval := peer.server.keepAlive
+	peer.server.mu.RUnlock()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
-	for range ticker.C {
-		s.clientsMu.RLock()
-		clients := make([]*WebSocketConnection, 0, len(s.clients))
-		for _, client := range s.clients {
-			clients = append(clients, client)
-		}
-		s.clientsMu.RUnlock()
-
-		now := time.Now()
-		for _, client := range clients {
-			// Check for timeout
-			if now.Sub(client.lastActivity) > s.timeout {
-				client.ws.Close()
-				continue
+	for {
+		select {
+		case <-peer.done:
+			return
+		case data := <-peer.outbound:
+			_ = peer.ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := peer.ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
+				return
 			}
-
-			// Send ping
-			client.writeMu.Lock()
-			err := client.ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second))
-			client.writeMu.Unlock()
-
-			if err != nil {
-				client.ws.Close()
+		case <-ticker.C:
+			if err := peer.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+				return
 			}
 		}
 	}
 }
 
 func (s *WebSocketServer) SetMessageHandler(handler func(*protocol.Connection, *protocol.Message)) {
+	s.mu.Lock()
 	s.handler = handler
+	s.mu.Unlock()
 }
-
+func (peer *WebSocketConnection) enqueue(data []byte) error {
+	select {
+	case <-peer.done:
+		return fmt.Errorf("connection closed")
+	default:
+	}
+	select {
+	case <-peer.done:
+		return fmt.Errorf("connection closed")
+	case peer.outbound <- data:
+		return nil
+	default:
+		peer.close()
+		return ErrBackpressure
+	}
+}
 func (s *WebSocketServer) SendMessage(conn *protocol.Connection, msg *protocol.Message) error {
-	// Find the WebSocket connection
+	if conn == nil {
+		return fmt.Errorf("nil connection")
+	}
 	s.clientsMu.RLock()
-	wsConn, exists := s.clients[conn.Addr.String()]
+	peer := s.clients[conn.Addr.String()]
 	s.clientsMu.RUnlock()
-
-	if !exists {
+	if peer == nil || peer.Connection != conn {
 		return fmt.Errorf("connection not found")
 	}
-
-	// Encode message
 	data, err := s.codec.Encode(msg)
 	if err != nil {
-		return fmt.Errorf("encode error: %w", err)
+		return err
 	}
-
-	// Send via WebSocket
-	wsConn.writeMu.Lock()
-	defer wsConn.writeMu.Unlock()
-
-	wsConn.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	return wsConn.ws.WriteMessage(websocket.TextMessage, data)
+	if int64(len(data)) > s.options.MaxMessageBytes {
+		return fmt.Errorf("message exceeds websocket limit")
+	}
+	return peer.enqueue(data)
 }
-
 func (s *WebSocketServer) Broadcast(msg *protocol.Message) {
-	s.clientsMu.RLock()
-	clients := make([]*WebSocketConnection, 0, len(s.clients))
-	for _, client := range s.clients {
-		clients = append(clients, client)
-	}
-	s.clientsMu.RUnlock()
-
-	// Encode once
 	data, err := s.codec.Encode(msg)
-	if err != nil {
+	if err != nil || int64(len(data)) > s.options.MaxMessageBytes {
 		return
 	}
-
-	// Send to all clients
-	for _, client := range clients {
-		client.writeMu.Lock()
-		client.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		client.ws.WriteMessage(websocket.TextMessage, data)
-		client.writeMu.Unlock()
+	s.clientsMu.RLock()
+	peers := make([]*WebSocketConnection, 0, len(s.clients))
+	for _, peer := range s.clients {
+		peers = append(peers, peer)
+	}
+	s.clientsMu.RUnlock()
+	for _, peer := range peers {
+		_ = peer.enqueue(data)
 	}
 }
-
 func (s *WebSocketServer) Clients() map[string]*protocol.Connection {
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
-
-	clients := make(map[string]*protocol.Connection)
+	clients := make(map[string]*protocol.Connection, len(s.clients))
 	for k, v := range s.clients {
 		clients[k] = v.Connection
 	}
 	return clients
 }
-
 func (s *WebSocketServer) SetMaxClients(max int) {
+	if max <= 0 {
+		return
+	}
+	s.mu.Lock()
 	s.maxClients = max
+	s.mu.Unlock()
 }
-
 func (s *WebSocketServer) GetClientCount() int {
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
 	return len(s.clients)
 }
 
+// SetKeepAlive configures future connections; existing writer timers retain their interval.
 func (s *WebSocketServer) SetKeepAlive(timeout, interval time.Duration) {
+	if timeout <= 0 || interval <= 0 || interval >= timeout {
+		return
+	}
+	s.mu.Lock()
 	s.timeout = timeout
 	s.keepAlive = interval
+	s.mu.Unlock()
 }
-
-func (s *WebSocketServer) SetConnectionCallbacks(onConnect, onDisconnect func(*protocol.Connection)) {
-	s.onConnect = onConnect
-	s.onDisconnect = onDisconnect
+func (s *WebSocketServer) SetConnectionCallbacks(connect, disconnect func(*protocol.Connection)) {
+	s.mu.Lock()
+	s.onConnect = connect
+	s.onDisconnect = disconnect
+	s.mu.Unlock()
 }
-
-func (s *WebSocketServer) GetTransportType() TransportType {
-	return TransportWebSocket
-}
+func (s *WebSocketServer) GetTransportType() TransportType { return TransportWebSocket }

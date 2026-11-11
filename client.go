@@ -19,9 +19,10 @@ type Client struct {
 	Connection    *protocol.Connection // Exported for access
 	serverAddr    string
 	customHandler func(*protocol.Message)
-	heartbeatStop chan bool
 	mu            sync.Mutex // Protects connection state
-	connected     bool       // Tracks connection state
+	connectMu     sync.Mutex
+	stopped       bool
+	connected     bool // Tracks connection state
 }
 
 func NewClient() (*Client, error) {
@@ -34,42 +35,66 @@ func NewClient() (*Client, error) {
 		transport: transport,
 		handler:   protocol.NewMessageHandler(transport),
 	}
+	transport.OnConnect = func(conn *protocol.Connection) {
+		c.handler.SetMessageCallback(conn, func(msg *protocol.Message) {
+			c.mu.Lock()
+			handler := c.customHandler
+			c.mu.Unlock()
+			if handler != nil {
+				handler(msg)
+			} else {
+				c.handleMessage(msg)
+			}
+		})
+	}
+	transport.OnDisconnect = func(conn *protocol.Connection) {
+		c.mu.Lock()
+		if c.Connection == conn {
+			c.connected = false
+		}
+		c.mu.Unlock()
+	}
 
 	return c, nil
 }
 
 func (c *Client) Connect(serverAddr string) error {
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Prevent double-connect
 	if c.connected {
+		c.mu.Unlock()
 		return fmt.Errorf("already connected to %s", c.serverAddr)
+	}
+	if c.stopped {
+		c.mu.Unlock()
+		return fmt.Errorf("client stopped; construct a new client")
 	}
 
 	c.serverAddr = serverAddr
+	c.mu.Unlock()
+	c.transport.Start()
 
 	conn, err := c.transport.Connect(serverAddr)
 	if err != nil {
 		return err
 	}
 
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return fmt.Errorf("client stopped")
+	}
 	c.Connection = conn
 	c.connected = true
-
-	// Set up message handler
-	c.handler.SetMessageCallback(conn, func(msg *protocol.Message) {
-		if c.customHandler != nil {
-			c.customHandler(msg)
-		} else {
-			c.handleMessage(msg)
-		}
-	})
+	c.mu.Unlock()
 
 	log.Printf("Connected to server: %s", serverAddr)
 
 	// Start heartbeat to keep connection alive
-	c.startHeartbeat()
+	// The transport owns keepalives; no additional application heartbeat workers.
 
 	return nil
 }
@@ -80,15 +105,10 @@ func (c *Client) Start() {
 
 func (c *Client) Stop() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Stop heartbeat
-	if c.heartbeatStop != nil {
-		close(c.heartbeatStop)
-		c.heartbeatStop = nil
-	}
 
 	c.connected = false
+	c.stopped = true
+	c.mu.Unlock()
 	c.transport.Stop()
 }
 
@@ -134,7 +154,7 @@ func (c *Client) SendText(text string) error {
 		Data:      text,
 	}
 
-	return c.handler.SendMessage(c.Connection, msg)
+	return c.SendMessage(c.CurrentConnection(), msg)
 }
 
 func (c *Client) SendCommand(cmd string, params map[string]interface{}) error {
@@ -152,7 +172,7 @@ func (c *Client) SendCommand(cmd string, params map[string]interface{}) error {
 		Data:      data,
 	}
 
-	return c.handler.SendMessage(c.Connection, msg)
+	return c.SendMessage(c.CurrentConnection(), msg)
 }
 
 func (c *Client) SendJSON(data interface{}) error {
@@ -163,7 +183,7 @@ func (c *Client) SendJSON(data interface{}) error {
 		Data:      data,
 	}
 
-	return c.handler.SendMessage(c.Connection, msg)
+	return c.SendMessage(c.CurrentConnection(), msg)
 }
 
 func (c *Client) RunInteractive() {
@@ -219,7 +239,7 @@ func (c *Client) RunInteractive() {
 					Timestamp: time.Now().Unix(),
 					Data:      "ping",
 				}
-				c.handler.SendMessage(c.Connection, msg)
+				c.SendMessage(c.CurrentConnection(), msg)
 				// Note: RTT calculation would be done in response handler
 				fmt.Printf("Ping sent at %v\n", start)
 
@@ -268,11 +288,17 @@ func (c *Client) stressTest(count int) {
 
 // SetMessageHandler allows overriding the message handler
 func (c *Client) SetMessageHandler(handler func(*protocol.Message)) {
+	c.mu.Lock()
 	c.customHandler = handler
-	// If already connected, update the callback
-	if c.Connection != nil {
-		c.handler.SetMessageCallback(c.Connection, handler)
-	}
+	c.mu.Unlock()
+}
+
+// CurrentConnection safely reads the connection pointer. The legacy exported
+// Connection field should not be read concurrently with Connect or Stop.
+func (c *Client) CurrentConnection() *protocol.Connection {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Connection
 }
 
 // SendMessage sends a message to the server
@@ -280,47 +306,9 @@ func (c *Client) SendMessage(conn *protocol.Connection, msg *protocol.Message) e
 	return c.handler.SendMessage(conn, msg)
 }
 
-// startHeartbeat sends periodic heartbeats to keep connection alive
-func (c *Client) startHeartbeat() {
-	c.heartbeatStop = make(chan bool)
-
-	go func() {
-		ticker := time.NewTicker(5 * time.Second) // Send heartbeat every 5 seconds
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-c.heartbeatStop:
-				return
-			case <-ticker.C:
-				// Send a lightweight heartbeat message
-				c.mu.Lock()
-				conn := c.Connection
-				isConnected := c.connected
-				c.mu.Unlock()
-
-				if conn != nil && isConnected && conn.GetState() == protocol.StateConnected {
-					heartbeat := &protocol.Message{
-						Type:      protocol.MessageTypeCommand,
-						Timestamp: time.Now().Unix(),
-						Data:      "heartbeat",
-					}
-					// Use goroutine to prevent blocking if send fails
-					go func() {
-						if err := c.SendMessage(conn, heartbeat); err != nil {
-							log.Printf("Heartbeat send failed: %v", err)
-						}
-					}()
-				}
-			}
-		}
-	}()
-}
-
 // SetKeepAlive configures the connection timeout and keep-alive settings
 func (c *Client) SetKeepAlive(timeout, interval time.Duration) {
 	if c.transport != nil {
-		c.transport.ConnTimeout = timeout
-		c.transport.KeepAliveInterval = interval
+		c.transport.SetKeepAlive(timeout, interval)
 	}
 }

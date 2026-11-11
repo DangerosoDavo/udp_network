@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"strings"
 	"time"
@@ -50,7 +51,7 @@ func runServer() {
 
 	if *secure {
 		fmt.Printf("🔐 Starting secure large string server on %s...\n", address)
-		server, err := udp_network.NewSecureServer(address)
+		server, err := udp_network.NewSecureServerWithPSK(address, exampleconfig.PSK())
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -132,7 +133,7 @@ func runClient() {
 
 	if *secure {
 		fmt.Printf("\n🔐 Connecting to secure server at %s...\n", serverAddr)
-		client, err := udp_network.NewSecureClient()
+		client, err := udp_network.NewSecureClientWithPSK(exampleconfig.PSK())
 		if err != nil {
 			log.Fatal(err)
 		}

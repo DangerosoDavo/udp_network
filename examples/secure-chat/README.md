@@ -1,3 +1,5 @@
+> Historical documentation: API, security, size and performance claims below may describe pre-v2 behavior. Follow the [current README](../../README.md) and [migration notes](../../MAINTENANCE.md) for supported contracts.
+
 # Secure Chat Example
 
 This example demonstrates end-to-end encrypted communication using the UDP Network Protocol with ChaCha20-Poly1305 encryption.

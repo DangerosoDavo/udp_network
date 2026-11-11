@@ -36,7 +36,7 @@ func runServer(addr string) {
 
 	fmt.Printf("🌐 WebSocket Chat Server starting on %s\n", addr)
 	fmt.Println("Connect with: go run main.go -addr", addr)
-	fmt.Println("Or from browser: ws://"+addr)
+	fmt.Println("Or from browser: ws://" + addr)
 
 	// Handle incoming messages
 	server.SetMessageHandler(func(conn *protocol.Connection, msg *protocol.Message) {

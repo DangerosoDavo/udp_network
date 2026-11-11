@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"os"
 	"strings"
@@ -29,7 +30,7 @@ func main() {
 }
 
 func runSecureServer(addr string) {
-	server, err := udpnet.NewSecureServer(addr)
+	server, err := udpnet.NewSecureServerWithPSK(addr, exampleconfig.PSK())
 	if err != nil {
 		log.Fatal("Failed to create secure server:", err)
 	}
@@ -57,7 +58,7 @@ func runSecureServer(addr string) {
 }
 
 func runSecureClient(serverAddr string) {
-	client, err := udpnet.NewSecureClient()
+	client, err := udpnet.NewSecureClientWithPSK(exampleconfig.PSK())
 	if err != nil {
 		log.Fatal("Failed to create secure client:", err)
 	}

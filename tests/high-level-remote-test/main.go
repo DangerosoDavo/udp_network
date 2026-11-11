@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"strings"
 	"sync"
@@ -40,7 +41,7 @@ func testRegularServer(address string, messageCount int) error {
 
 	client.SetMessageHandler(func(msg *protocol.Message) {
 		count := atomic.AddInt64(&received, 1)
-		fmt.Printf("📨 Received response %d/%d: %s\n", count, messageCount, 
+		fmt.Printf("📨 Received response %d/%d: %s\n", count, messageCount,
 			fmt.Sprintf("Type: %s", msg.Type))
 		wg.Done()
 	})
@@ -61,7 +62,7 @@ func testRegularServer(address string, messageCount int) error {
 
 	for i := 0; i < messageCount; i++ {
 		testMessage := fmt.Sprintf("Test message %d from remote client", i+1)
-		
+
 		if err := client.SendText(testMessage); err != nil {
 			return fmt.Errorf("failed to send message %d: %v", i+1, err)
 		}
@@ -91,7 +92,7 @@ func testSecureServer(address string, messageCount int) error {
 	fmt.Printf("===========================================\n")
 
 	// Create secure client using high-level API
-	client, err := udp_network.NewSecureClient()
+	client, err := udp_network.NewSecureClientWithPSK(exampleconfig.PSK())
 	if err != nil {
 		return fmt.Errorf("failed to create secure client: %v", err)
 	}
@@ -114,12 +115,12 @@ func testSecureServer(address string, messageCount int) error {
 	var received int64
 	for i := 0; i < messageCount; i++ {
 		testMessage := fmt.Sprintf("Encrypted test message %d from remote client", i+1)
-		
+
 		if err := client.SendText(testMessage); err != nil {
 			return fmt.Errorf("failed to send encrypted message %d: %v", i+1, err)
 		}
 		fmt.Printf("  Sent encrypted message %d/%d: %s\n", i+1, messageCount, testMessage)
-		
+
 		// For secure client, we'll just count successful sends since the API is different
 		atomic.AddInt64(&received, 1)
 		time.Sleep(200 * time.Millisecond)
@@ -141,7 +142,7 @@ func testServerCommands(address string, isSecure bool) error {
 
 	if isSecure {
 		// Test secure server with commands
-		client, err := udp_network.NewSecureClient()
+		client, err := udp_network.NewSecureClientWithPSK(exampleconfig.PSK())
 		if err != nil {
 			return fmt.Errorf("failed to create secure client: %v", err)
 		}
@@ -157,7 +158,7 @@ func testServerCommands(address string, isSecure bool) error {
 		// Test different command types
 		commands := []string{
 			"hello",
-			"ping", 
+			"ping",
 			"time",
 		}
 
@@ -197,7 +198,7 @@ func testServerCommands(address string, isSecure bool) error {
 		commands := []string{
 			"hello",
 			"ping",
-			"time", 
+			"time",
 			"stats",
 		}
 
@@ -252,7 +253,7 @@ func main() {
 	if *both {
 		// Test both regular and secure servers
 		fmt.Println("\n🔄 Testing both regular and secure servers...")
-		
+
 		// Test regular server (port 8080)
 		regularAddr := *host + ":8080"
 		if err := testRegularServer(regularAddr, *messages); err != nil {
@@ -282,13 +283,13 @@ func main() {
 	} else {
 		// Test single server (try both ports)
 		fmt.Println("\n🔄 Auto-detecting server type...")
-		
+
 		// Try secure server first (8443)
 		secureAddr := *host + ":8443"
 		fmt.Printf("Trying secure server at %s...\n", secureAddr)
 		if err := testSecureServer(secureAddr, *messages); err != nil {
 			fmt.Printf("Secure server test failed, trying regular server...\n")
-			
+
 			// Try regular server (8080)
 			regularAddr := *host + ":8080"
 			if err := testRegularServer(regularAddr, *messages); err != nil {
@@ -310,7 +311,7 @@ func main() {
 		fmt.Printf("✅ UDP server at %s is working correctly\n", *host)
 		fmt.Println("\nYour server is:")
 		fmt.Println("- Accepting connections ✅")
-		fmt.Println("- Processing messages ✅") 
+		fmt.Println("- Processing messages ✅")
 		fmt.Println("- Handling commands ✅")
 		if *both {
 			fmt.Println("- Encryption working ✅")

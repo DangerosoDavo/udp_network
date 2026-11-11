@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"strings"
 	"sync"
@@ -178,7 +179,7 @@ func testSecureLargeString(address string) (*TestResults, error) {
 	fmt.Println("=" + strings.Repeat("=", 50))
 
 	// Create secure client
-	client, err := udp_network.NewSecureClient()
+	client, err := udp_network.NewSecureClientWithPSK(exampleconfig.PSK())
 	if err != nil {
 		return results, fmt.Errorf("failed to create secure client: %v", err)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -91,7 +92,7 @@ func testSecureConnection(address string, messageCount int, messageSize int) err
 	fmt.Printf("Testing secure UDP connection to %s...\n", address)
 
 	// Start client transport
-	clientTransport, err := protocol.NewSecureTransport(":0")
+	clientTransport, err := protocol.NewSecureTransportWithPSK(":0", exampleconfig.PSK())
 	if err != nil {
 		return fmt.Errorf("failed to create secure transport: %v", err)
 	}
@@ -160,9 +161,9 @@ func main() {
 
 	fmt.Println("UDP Network Remote Test Client")
 	fmt.Println("=============================")
-	
+
 	address := *host + ":" + *port
-	
+
 	fmt.Printf("Target: %s\n", address)
 	fmt.Printf("Mode: %s\n", map[bool]string{true: "Secure (Encrypted)", false: "Regular (Unencrypted)"}[*secure])
 	fmt.Printf("Messages: %d x %d bytes\n", *messages, *size)

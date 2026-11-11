@@ -12,15 +12,9 @@ func TestCryptoSaltRandomness(t *testing.T) {
 	// Create multiple crypto states and verify they produce different ciphertexts
 	// for the same plaintext (indicating different salts were used in key derivation)
 
-	cs1a, _ := NewCryptoState()
-	cs1b, _ := NewCryptoState()
-	cs1a.SetRemotePublicKey(cs1b.GetPublicKey())
-	cs1b.SetRemotePublicKey(cs1a.GetPublicKey())
+	cs1a, _ := cryptoPair(t)
 
-	cs2a, _ := NewCryptoState()
-	cs2b, _ := NewCryptoState()
-	cs2a.SetRemotePublicKey(cs2b.GetPublicKey())
-	cs2b.SetRemotePublicKey(cs2a.GetPublicKey())
+	cs2a, _ := cryptoPair(t)
 
 	// Same plaintext
 	plaintext := []byte("test message")
@@ -201,10 +195,7 @@ func TestConnectionFragmentReassemblyThreadSafety(t *testing.T) {
 
 // TestCryptoNonceUniqueness verifies that nonces don't repeat
 func TestCryptoNonceUniqueness(t *testing.T) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
+	cs1, _ := cryptoPair(t)
 
 	const messages = 1000
 	nonces := make(map[string]bool)
@@ -230,10 +221,7 @@ func TestCryptoNonceUniqueness(t *testing.T) {
 
 // TestCryptoReplayPrevention tests that replayed packets are detected
 func TestCryptoReplayPrevention(t *testing.T) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
+	cs1, cs2 := cryptoPair(t)
 
 	// Encrypt a message
 	plaintext := []byte("original message")
@@ -245,35 +233,26 @@ func TestCryptoReplayPrevention(t *testing.T) {
 		t.Fatalf("First decrypt failed: %v", err)
 	}
 
-	// Replay the same ciphertext
-	// Note: Current implementation doesn't strictly prevent replay within the same session
-	// but the nonce tracking provides some protection
+	// Exact replay must fail, including the first nonce of a session.
 	_, err = cs2.Decrypt(ciphertext)
-	if err != nil {
-		// Replay was detected (good)
-		t.Log("Replay detected (expected behavior)")
-	} else {
-		// Replay was not detected - document this behavior
-		t.Log("Note: Replay not strictly prevented in current implementation")
+	if err == nil {
+		t.Fatal("replayed ciphertext accepted")
 	}
 }
 
 // TestPacketTampering verifies that tampered packets are detected
 func TestPacketTampering(t *testing.T) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
+	cs1, cs2 := cryptoPair(t)
 
 	plaintext := []byte("important message")
 	ciphertext, _ := cs1.Encrypt(plaintext)
 
 	// Tamper with different parts of the ciphertext
 	positions := []int{
-		NonceSize,                    // Tamper with ciphertext start
-		len(ciphertext) / 2,          // Tamper with middle
+		NonceSize,                     // Tamper with ciphertext start
+		len(ciphertext) / 2,           // Tamper with middle
 		len(ciphertext) - TagSize - 1, // Tamper near auth tag
-		len(ciphertext) - 1,          // Tamper with auth tag
+		len(ciphertext) - 1,           // Tamper with auth tag
 	}
 
 	for _, pos := range positions {

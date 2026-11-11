@@ -228,12 +228,15 @@ func (gs *GameServer) broadcastEvent(event string, data map[string]interface{}, 
 	}
 
 	gs.playersMu.RLock()
-	defer gs.playersMu.RUnlock()
-
+	recipients := make([]*protocol.Connection, 0, len(gs.players))
 	for id, player := range gs.players {
 		if id != excludeID {
-			gs.server.SendMessage(player.Connection, msg)
+			recipients = append(recipients, player.Connection)
 		}
+	}
+	gs.playersMu.RUnlock()
+	for _, conn := range recipients {
+		gs.server.SendMessage(conn, msg)
 	}
 }
 

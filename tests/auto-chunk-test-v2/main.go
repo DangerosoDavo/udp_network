@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"strings"
 	"time"
 
@@ -79,7 +80,7 @@ func main() {
 	fmt.Println("\n\n🔐 Test 2: Secure Client/Server")
 	fmt.Println("-" + strings.Repeat("-", 40))
 
-	secureServer, err := udp_network.NewSecureServer(":8081")
+	secureServer, err := udp_network.NewSecureServerWithPSK(":8081", exampleconfig.PSK())
 	if err != nil {
 		panic(fmt.Sprintf("Failed to create secure server: %v", err))
 	}
@@ -92,7 +93,7 @@ func main() {
 	for _, test := range testSizes {
 		fmt.Printf("\n  Testing %s:\n", test.name)
 
-		client, err := udp_network.NewSecureClient()
+		client, err := udp_network.NewSecureClientWithPSK(exampleconfig.PSK())
 		if err != nil {
 			fmt.Printf("    ❌ Failed to create secure client: %v\n", err)
 			continue

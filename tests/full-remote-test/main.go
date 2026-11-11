@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/DangerosoDavo/udp_network/internal/exampleconfig"
 	"log"
 	"strings"
 	"sync"
@@ -25,7 +26,7 @@ func testConnection(address string, isSecure bool, messageCount int, messageSize
 	if isSecure {
 		connType = "Secure"
 	}
-	
+
 	fmt.Printf("\n%s UDP Test to %s\n", connType, address)
 	fmt.Printf("%s\n", "===========================================")
 
@@ -35,7 +36,7 @@ func testConnection(address string, isSecure bool, messageCount int, messageSize
 
 	if isSecure {
 		// Test secure connection
-		clientTransport, err := protocol.NewSecureTransport(":0")
+		clientTransport, err := protocol.NewSecureTransportWithPSK(":0", exampleconfig.PSK())
 		if err != nil {
 			return fmt.Errorf("failed to create secure transport: %v", err)
 		}
@@ -183,7 +184,7 @@ func main() {
 	if *both {
 		// Test both regular and secure servers
 		fmt.Println("\n🔄 Testing both regular and secure servers...")
-		
+
 		// Test regular server (port 8080)
 		regularAddr := *host + ":8080"
 		if err := testConnection(regularAddr, false, *messages, *size); err != nil {
@@ -203,13 +204,13 @@ func main() {
 	} else {
 		// Test single server (auto-detect based on common ports)
 		fmt.Println("\n🔄 Auto-detecting server type...")
-		
+
 		// Try secure server first (8443)
 		secureAddr := *host + ":8443"
 		fmt.Printf("Trying secure server at %s...\n", secureAddr)
 		if err := testConnection(secureAddr, true, *messages, *size); err != nil {
 			fmt.Printf("Secure server not available, trying regular server...\n")
-			
+
 			// Try regular server (8080)
 			regularAddr := *host + ":8080"
 			if err := testConnection(regularAddr, false, *messages, *size); err != nil {

@@ -1,0 +1,17 @@
+go version go1.27.4 windows/amd64
+goos: windows
+goarch: amd64
+pkg: github.com/DangerosoDavo/udp_network/tokenizer
+cpu: Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz
+BenchmarkEncodeTelemetryText 	    1472	    279448 ns/op	   3.89 MB/s	    3776 B/op	       6 allocs/op
+BenchmarkEncodeTelemetryText 	    1351	    299353 ns/op	   3.63 MB/s	    3776 B/op	       6 allocs/op
+BenchmarkEncodeTelemetryText 	    1089	    334651 ns/op	   3.25 MB/s	    3776 B/op	       6 allocs/op
+BenchmarkEncodeTelemetryText 	     943	    383657 ns/op	   2.84 MB/s	    3776 B/op	       6 allocs/op
+BenchmarkEncodeTelemetryText 	    1142	    293369 ns/op	   3.71 MB/s	    3776 B/op	       6 allocs/op
+BenchmarkEncodeOpaqueText    	     656	    539988 ns/op	   2.37 MB/s	    6464 B/op	       7 allocs/op
+BenchmarkEncodeOpaqueText    	     658	    550200 ns/op	   2.33 MB/s	    6464 B/op	       7 allocs/op
+BenchmarkEncodeOpaqueText    	     658	    601945 ns/op	   2.13 MB/s	    6464 B/op	       7 allocs/op
+BenchmarkEncodeOpaqueText    	     628	    596258 ns/op	   2.15 MB/s	    6464 B/op	       7 allocs/op
+BenchmarkEncodeOpaqueText    	     741	    611415 ns/op	   2.09 MB/s	    6464 B/op	       7 allocs/op
+PASS
+ok  	github.com/DangerosoDavo/udp_network/tokenizer	4.961s

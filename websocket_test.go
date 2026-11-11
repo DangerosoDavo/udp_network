@@ -235,7 +235,7 @@ func TestWebSocketBroadcast(t *testing.T) {
 		clients[i] = client
 
 		receivedChans[i] = make(chan *protocol.Message, 2) // Buffer for welcome + broadcast
-		ch := receivedChans[i] // Capture for closure
+		ch := receivedChans[i]                             // Capture for closure
 		client.SetMessageHandler(func(msg *protocol.Message) {
 			ch <- msg
 		})
@@ -330,7 +330,7 @@ func TestWebSocketConcurrentMessages(t *testing.T) {
 			defer wg.Done()
 			text := fmt.Sprintf("Message %d", idx)
 			if err := client.SendText(text); err != nil {
-				t.Logf("SendText %d failed: %v", idx, err)
+				t.Errorf("SendText %d failed: %v", idx, err)
 			}
 		}(i)
 	}
@@ -339,7 +339,7 @@ func TestWebSocketConcurrentMessages(t *testing.T) {
 
 	// Wait for all messages
 	timeout := time.After(5 * time.Second)
-	for receivedCount < numMessages {
+	for i := 0; i < numMessages; i++ {
 		select {
 		case <-received:
 			// Continue
@@ -347,8 +347,7 @@ func TestWebSocketConcurrentMessages(t *testing.T) {
 			mu.Lock()
 			count := receivedCount
 			mu.Unlock()
-			t.Logf("Only received %d/%d messages before timeout", count, numMessages)
-			return
+			t.Fatalf("Only received %d/%d messages before timeout", count, numMessages)
 		}
 	}
 }
@@ -498,50 +497,58 @@ func TestWebSocketConnectionCallbacks(t *testing.T) {
 	}
 }
 
-func BenchmarkWebSocketSendMessage(b *testing.B) {
-	server, _ := NewWebSocketServer("localhost:18091", &ServerOptions{
-		MaxClients: 10,
-	})
-	go server.Start()
-	defer server.Stop()
-	time.Sleep(200 * time.Millisecond)
-
-	client, _ := NewWebSocketClient(&ClientOptions{})
-	_ = client.Connect("ws://localhost:18091")
-	defer client.Stop()
-	time.Sleep(200 * time.Millisecond)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = client.SendText("benchmark message")
+// Both names now measure delivered roundtrips, with a bounded acknowledgement
+// channel and observable errors rather than enqueue-only or ignored-failure rates.
+func benchmarkWebSocketRoundTrip(b *testing.B) {
+	server, err := NewWebSocketServer("127.0.0.1:0", nil)
+	if err != nil {
+		b.Fatal(err)
 	}
-}
-
-func BenchmarkWebSocketReceiveMessage(b *testing.B) {
-	server, _ := NewWebSocketServer("localhost:18092", &ServerOptions{
-		MaxClients: 10,
-	})
-
-	received := make(chan bool, b.N)
+	sendErrors := make(chan error, 1)
 	server.SetMessageHandler(func(conn *protocol.Connection, msg *protocol.Message) {
-		received <- true
+		if err := server.SendMessage(conn, msg); err != nil {
+			select {
+			case sendErrors <- err:
+			default:
+			}
+		}
 	})
-
-	go server.Start()
+	if err := server.StartWithError(); err != nil {
+		b.Fatal(err)
+	}
 	defer server.Stop()
-	time.Sleep(200 * time.Millisecond)
-
-	client, _ := NewWebSocketClient(&ClientOptions{})
-	_ = client.Connect("ws://localhost:18092")
+	client, err := NewWebSocketClient(nil)
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer client.Stop()
-	time.Sleep(200 * time.Millisecond)
-
+	received := make(chan struct{}, 1)
+	client.SetMessageHandler(func(msg *protocol.Message) {
+		if msg.Type == protocol.MessageTypeText {
+			received <- struct{}{}
+		}
+	})
+	if err := client.Connect("ws://" + server.Addr().String()); err != nil {
+		b.Fatal(err)
+	}
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	const payload = "benchmark message"
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = client.SendText("benchmark message")
-	}
-
-	for i := 0; i < b.N; i++ {
-		<-received
+		if err := client.SendText(payload); err != nil {
+			b.Fatal(err)
+		}
+		select {
+		case <-received:
+		case err := <-sendErrors:
+			b.Fatal(err)
+		case <-timer.C:
+			b.Fatal("roundtrip timeout")
+		}
 	}
 }
+func BenchmarkWebSocketSendMessage(b *testing.B)    { benchmarkWebSocketRoundTrip(b) }
+func BenchmarkWebSocketReceiveMessage(b *testing.B) { benchmarkWebSocketRoundTrip(b) }

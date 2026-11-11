@@ -1,3 +1,5 @@
+> Historical documentation: API, security, size and performance claims below may describe pre-v2 behavior. Follow the [current README](README.md) and [migration notes](MAINTENANCE.md) for supported contracts.
+
 # UDP Network Protocol - API Reference
 
 ## Table of Contents

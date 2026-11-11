@@ -1,22 +1,26 @@
 package protocol
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	// Maximum chunk size (leaving room for metadata)
-	MaxChunkSize = 300 * 1024 // 300KB per chunk
-
-	// Chunk reassembly timeout
-	ChunkTimeout = 5 * time.Minute
+	// 32KiB stays below MaxMessageSize even with worst-case JSON string escaping.
+	MaxChunkSize        = 32 * 1024
+	ChunkTimeout        = 5 * time.Minute
+	maxChunkCount       = 128
+	maxChunkTransfers   = 64
+	maxChunkBufferBytes = 4 << 20
 )
 
-// ChunkMetadata contains information about a chunk
 type ChunkMetadata struct {
 	TransferID  string    `json:"transfer_id"`
 	ChunkIndex  int       `json:"chunk_index"`
@@ -25,8 +29,6 @@ type ChunkMetadata struct {
 	Checksum    string    `json:"checksum"`
 	Timestamp   time.Time `json:"timestamp"`
 }
-
-// ChunkedMessage represents a message that can be sent in chunks
 type ChunkedMessage struct {
 	Type      MessageType            `json:"type"`
 	Metadata  ChunkMetadata          `json:"metadata"`
@@ -34,233 +36,226 @@ type ChunkedMessage struct {
 	ExtraData map[string]interface{} `json:"extra,omitempty"`
 }
 
-// ChunkReassembler handles reassembly of chunked messages
+// ChunkReassembler is bounded by transfer count, bytes, chunk count and metadata
+// size. Expiration runs on access (no permanently leaked cleanup goroutine).
+// Completion callbacks run synchronously OUTSIDE the mutex and may reenter.
 type ChunkReassembler struct {
 	transfers  map[string]*TransferState
+	completed  map[string]time.Time
 	mu         sync.RWMutex
-	onComplete func(transferID string, data []byte, metadata map[string]interface{})
+	onComplete func(string, []byte, map[string]interface{})
+	bytes      int
+	closed     bool
 }
-
-// TransferState tracks the state of a chunked transfer
 type TransferState struct {
-	TransferID     string
-	TotalChunks    int
-	ReceivedChunks map[int][]byte
-	Metadata       map[string]interface{}
-	StartTime      time.Time
-	LastActivity   time.Time
-	Complete       bool
-	mu             sync.Mutex
+	TransferID              string
+	TotalChunks             int
+	ReceivedChunks          map[int][]byte
+	Metadata                map[string]interface{}
+	StartTime, LastActivity time.Time
+	Complete                bool
+	mu                      sync.Mutex // retained for source compatibility; state is guarded by owner cr.mu
 }
 
-// NewChunkReassembler creates a new chunk reassembler
 func NewChunkReassembler() *ChunkReassembler {
-	cr := &ChunkReassembler{
-		transfers: make(map[string]*TransferState),
-	}
-
-	// Start cleanup goroutine
-	go cr.cleanupLoop()
-
-	return cr
+	return &ChunkReassembler{transfers: make(map[string]*TransferState), completed: make(map[string]time.Time)}
 }
-
-// SetCompleteCallback sets the callback for completed transfers
-func (cr *ChunkReassembler) SetCompleteCallback(callback func(transferID string, data []byte, metadata map[string]interface{})) {
-	cr.onComplete = callback
-}
-
-// AddChunk adds a chunk to the reassembler
-func (cr *ChunkReassembler) AddChunk(chunk *ChunkedMessage) error {
+func (cr *ChunkReassembler) SetCompleteCallback(fn func(string, []byte, map[string]interface{})) {
 	cr.mu.Lock()
-	transfer, exists := cr.transfers[chunk.Metadata.TransferID]
-	if !exists {
-		transfer = &TransferState{
-			TransferID:     chunk.Metadata.TransferID,
-			TotalChunks:    chunk.Metadata.TotalChunks,
-			ReceivedChunks: make(map[int][]byte),
-			Metadata:       chunk.ExtraData,
-			StartTime:      time.Now(),
-			LastActivity:   time.Now(),
-		}
-		cr.transfers[chunk.Metadata.TransferID] = transfer
-	}
+	cr.onComplete = fn
 	cr.mu.Unlock()
-
-	transfer.mu.Lock()
-	defer transfer.mu.Unlock()
-
-	// Verify chunk
-	if chunk.Metadata.ChunkIndex >= chunk.Metadata.TotalChunks {
-		return fmt.Errorf("invalid chunk index %d (total chunks: %d)",
-			chunk.Metadata.ChunkIndex, chunk.Metadata.TotalChunks)
+}
+func (cr *ChunkReassembler) cleanupLocked(now time.Time) {
+	for id, t := range cr.transfers {
+		if now.Sub(t.LastActivity) > ChunkTimeout {
+			for _, part := range t.ReceivedChunks {
+				cr.bytes -= len(part)
+			}
+			delete(cr.transfers, id)
+		}
 	}
-
-	// Verify checksum
+	for id, done := range cr.completed {
+		if now.Sub(done) > ChunkTimeout {
+			delete(cr.completed, id)
+		}
+	}
+}
+func (cr *ChunkReassembler) AddChunk(chunk *ChunkedMessage) error {
+	if chunk == nil {
+		return errors.New("nil chunk")
+	}
+	m := chunk.Metadata
+	if m.TransferID == "" || len(m.TransferID) > 128 || m.TotalChunks < 1 || m.TotalChunks > maxChunkCount || m.ChunkIndex < 0 || m.ChunkIndex >= m.TotalChunks ||
+		len(chunk.Data) > MaxChunkSize || m.ChunkSize != len(chunk.Data) {
+		return errors.New("invalid chunk metadata")
+	}
 	hash := sha256.Sum256([]byte(chunk.Data))
-	checksum := hex.EncodeToString(hash[:])
-	if checksum != chunk.Metadata.Checksum {
-		return fmt.Errorf("chunk checksum mismatch")
+	if hex.EncodeToString(hash[:]) != m.Checksum {
+		return errors.New("chunk checksum mismatch")
 	}
-
-	// Store chunk
-	transfer.ReceivedChunks[chunk.Metadata.ChunkIndex] = []byte(chunk.Data)
-	transfer.LastActivity = time.Now()
-
-	// Check if transfer is complete
-	if len(transfer.ReceivedChunks) == transfer.TotalChunks {
-		transfer.Complete = true
-
-		// Reassemble data
-		totalSize := 0
-		for i := 0; i < transfer.TotalChunks; i++ {
-			totalSize += len(transfer.ReceivedChunks[i])
-		}
-
-		completeData := make([]byte, 0, totalSize)
-		for i := 0; i < transfer.TotalChunks; i++ {
-			completeData = append(completeData, transfer.ReceivedChunks[i]...)
-		}
-
-		// Trigger callback
-		if cr.onComplete != nil {
-			go cr.onComplete(transfer.TransferID, completeData, transfer.Metadata)
-		}
-
-		// Clean up
-		cr.mu.Lock()
-		delete(cr.transfers, chunk.Metadata.TransferID)
+	metadataBytes, err := json.Marshal(chunk.ExtraData)
+	if err != nil || len(metadataBytes) > 16*1024 {
+		return errors.New("chunk metadata too large or invalid")
+	}
+	var metadata map[string]interface{}
+	if err = json.Unmarshal(metadataBytes, &metadata); err != nil {
+		return err
+	}
+	cr.mu.Lock()
+	if cr.closed {
 		cr.mu.Unlock()
+		return errors.New("reassembler closed")
 	}
-
-	return nil
-}
-
-// GetTransferStatus returns the status of a transfer
-func (cr *ChunkReassembler) GetTransferStatus(transferID string) (received, total int, exists bool) {
-	cr.mu.RLock()
-	transfer, exists := cr.transfers[transferID]
-	cr.mu.RUnlock()
-
-	if !exists {
-		return 0, 0, false
+	cr.cleanupLocked(time.Now())
+	if _, done := cr.completed[m.TransferID]; done {
+		cr.mu.Unlock()
+		return nil
 	}
-
-	transfer.mu.Lock()
-	received = len(transfer.ReceivedChunks)
-	total = transfer.TotalChunks
-	transfer.mu.Unlock()
-
-	return received, total, true
-}
-
-// cleanupLoop removes timed-out transfers
-func (cr *ChunkReassembler) cleanupLoop() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		cr.mu.Lock()
-		now := time.Now()
-
-		for id, transfer := range cr.transfers {
-			if now.Sub(transfer.LastActivity) > ChunkTimeout {
-				delete(cr.transfers, id)
+	t := cr.transfers[m.TransferID]
+	if t == nil {
+		if len(cr.transfers) >= maxChunkTransfers {
+			cr.mu.Unlock()
+			return errors.New("chunk transfer limit")
+		}
+		t = &TransferState{TransferID: m.TransferID, TotalChunks: m.TotalChunks, ReceivedChunks: make(map[int][]byte), Metadata: metadata, StartTime: time.Now(), LastActivity: time.Now()}
+		cr.transfers[m.TransferID] = t
+	}
+	if t.TotalChunks != m.TotalChunks {
+		cr.mu.Unlock()
+		return errors.New("inconsistent chunk total")
+	}
+	if old, ok := t.ReceivedChunks[m.ChunkIndex]; ok {
+		cr.mu.Unlock()
+		if !bytes.Equal(old, []byte(chunk.Data)) {
+			return errors.New("conflicting duplicate chunk")
+		}
+		return nil
+	}
+	if cr.bytes+len(chunk.Data) > maxChunkBufferBytes {
+		cr.mu.Unlock()
+		return errors.New("chunk buffer byte limit")
+	}
+	t.ReceivedChunks[m.ChunkIndex] = []byte(chunk.Data)
+	cr.bytes += len(chunk.Data)
+	t.LastActivity = time.Now()
+	if len(t.ReceivedChunks) != t.TotalChunks {
+		cr.mu.Unlock()
+		return nil
+	}
+	total := 0
+	for _, b := range t.ReceivedChunks {
+		total += len(b)
+	}
+	data := make([]byte, 0, total)
+	for i := 0; i < t.TotalChunks; i++ {
+		data = append(data, t.ReceivedChunks[i]...)
+	}
+	cr.bytes -= total
+	delete(cr.transfers, m.TransferID)
+	// A bounded completed-ID cache suppresses replayed completed transfers.
+	if len(cr.completed) >= 1024 {
+		var oldest string
+		var when time.Time
+		for id, at := range cr.completed {
+			if oldest == "" || at.Before(when) {
+				oldest = id
+				when = at
 			}
 		}
-
-		cr.mu.Unlock()
+		delete(cr.completed, oldest)
 	}
+	cr.completed[m.TransferID] = time.Now()
+	fn := cr.onComplete
+	extra := t.Metadata
+	cr.mu.Unlock()
+	if fn != nil {
+		fn(m.TransferID, data, extra)
+	}
+	return nil
 }
-
-// ChunkString splits a large string into chunks for transmission
-func ChunkString(data string, transferID string, metadata map[string]interface{}) ([]*ChunkedMessage, error) {
-	if transferID == "" {
-		// Generate transfer ID if not provided
+func (cr *ChunkReassembler) GetTransferStatus(id string) (int, int, bool) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	cr.cleanupLocked(time.Now())
+	t, ok := cr.transfers[id]
+	if !ok {
+		return 0, 0, false
+	}
+	return len(t.ReceivedChunks), t.TotalChunks, true
+}
+func (cr *ChunkReassembler) Close() {
+	cr.mu.Lock()
+	cr.closed = true
+	cr.transfers = make(map[string]*TransferState)
+	cr.completed = make(map[string]time.Time)
+	cr.bytes = 0
+	cr.mu.Unlock()
+}
+func ChunkString(data, id string, metadata map[string]interface{}) ([]*ChunkedMessage, error) {
+	if !utf8.ValidString(data) {
+		return nil, errors.New("chunked string must be valid UTF-8")
+	}
+	if len(data) > MaxChunkSize*maxChunkCount {
+		return nil, errors.New("chunked message too large")
+	}
+	if len(id) > 128 {
+		return nil, errors.New("transfer ID too long")
+	}
+	if id == "" {
 		hash := sha256.Sum256([]byte(data + time.Now().String()))
-		transferID = hex.EncodeToString(hash[:16])
+		id = hex.EncodeToString(hash[:16])
 	}
-
-	dataBytes := []byte(data)
-	totalSize := len(dataBytes)
-
-	// Calculate number of chunks
-	numChunks := (totalSize + MaxChunkSize - 1) / MaxChunkSize
-
-	chunks := make([]*ChunkedMessage, 0, numChunks)
-
-	for i := 0; i < numChunks; i++ {
-		start := i * MaxChunkSize
-		end := start + MaxChunkSize
-		if end > totalSize {
-			end = totalSize
+	parts := make([]string, 0, (len(data)+MaxChunkSize-1)/MaxChunkSize)
+	for start := 0; start < len(data); {
+		end := min(start+MaxChunkSize, len(data))
+		for end < len(data) && !utf8.RuneStart(data[end]) {
+			end--
 		}
-
-		chunkData := dataBytes[start:end]
-
-		// Calculate checksum
-		hash := sha256.Sum256(chunkData)
-		checksum := hex.EncodeToString(hash[:])
-
-		chunk := &ChunkedMessage{
-			Type: MessageTypeChunked,
-			Metadata: ChunkMetadata{
-				TransferID:  transferID,
-				ChunkIndex:  i,
-				TotalChunks: numChunks,
-				ChunkSize:   len(chunkData),
-				Checksum:    checksum,
-				Timestamp:   time.Now(),
-			},
-			Data:      string(chunkData),
-			ExtraData: metadata,
-		}
-
-		chunks = append(chunks, chunk)
+		parts = append(parts, data[start:end])
+		start = end
 	}
-
+	if len(parts) == 0 {
+		parts = append(parts, "")
+	}
+	if len(parts) > maxChunkCount {
+		return nil, errors.New("chunked string has too many UTF-8 chunks")
+	}
+	count := len(parts)
+	chunks := make([]*ChunkedMessage, 0, count)
+	for i, part := range parts {
+		hash := sha256.Sum256([]byte(part))
+		chunks = append(chunks, &ChunkedMessage{Type: MessageTypeChunked, Metadata: ChunkMetadata{TransferID: id, ChunkIndex: i, TotalChunks: count, ChunkSize: len(part), Checksum: hex.EncodeToString(hash[:]), Timestamp: time.Now()}, Data: part, ExtraData: metadata})
+	}
 	return chunks, nil
 }
 
-// ChunkedTransferStats provides statistics about a chunked transfer
 type ChunkedTransferStats struct {
-	TransferID     string
-	TotalChunks    int
-	ReceivedChunks int
-	TotalBytes     int
-	StartTime      time.Time
-	Duration       time.Duration
-	Complete       bool
+	TransferID                              string
+	TotalChunks, ReceivedChunks, TotalBytes int
+	StartTime                               time.Time
+	Duration                                time.Duration
+	Complete                                bool
 }
 
-// GetStats returns statistics for all active transfers
 func (cr *ChunkReassembler) GetStats() []ChunkedTransferStats {
-	cr.mu.RLock()
-	defer cr.mu.RUnlock()
-
-	stats := make([]ChunkedTransferStats, 0, len(cr.transfers))
-
-	for _, transfer := range cr.transfers {
-		transfer.mu.Lock()
-
-		totalBytes := 0
-		for _, chunk := range transfer.ReceivedChunks {
-			totalBytes += len(chunk)
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	cr.cleanupLocked(time.Now())
+	result := make([]ChunkedTransferStats, 0, len(cr.transfers))
+	for _, t := range cr.transfers {
+		size := 0
+		for _, part := range t.ReceivedChunks {
+			size += len(part)
 		}
-
-		stat := ChunkedTransferStats{
-			TransferID:     transfer.TransferID,
-			TotalChunks:    transfer.TotalChunks,
-			ReceivedChunks: len(transfer.ReceivedChunks),
-			TotalBytes:     totalBytes,
-			StartTime:      transfer.StartTime,
-			Duration:       time.Since(transfer.StartTime),
-			Complete:       transfer.Complete,
-		}
-
-		transfer.mu.Unlock()
-		stats = append(stats, stat)
+		result = append(result, ChunkedTransferStats{t.TransferID, t.TotalChunks, len(t.ReceivedChunks), size, t.StartTime, time.Since(t.StartTime), false})
 	}
+	return result
+}
 
-	return stats
+// ValidateChunkSize provides callers a stable bound before allocating a transfer.
+func ValidateChunkSize(size int) error {
+	if size < 0 || size > MaxChunkSize*maxChunkCount {
+		return fmt.Errorf("chunked message exceeds %d bytes", MaxChunkSize*maxChunkCount)
+	}
+	return nil
 }

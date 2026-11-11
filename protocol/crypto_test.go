@@ -2,320 +2,278 @@ package protocol
 
 import (
 	"bytes"
+	"errors"
+	"math"
+	"sync"
 	"testing"
 )
 
-func TestCryptoStateKeyGeneration(t *testing.T) {
-	cs, err := NewCryptoState()
+var testPSK = bytes.Repeat([]byte{0x42}, 32)
+
+func finishCryptoPair(t testing.TB, a, b *CryptoState) {
+	t.Helper()
+	hello, err := a.StartHandshake()
 	if err != nil {
-		t.Fatalf("NewCryptoState() failed: %v", err)
+		t.Fatal(err)
 	}
-
-	// Check public key is generated
-	pubKey := cs.GetPublicKey()
-	if len(pubKey) != DHKeySize {
-		t.Errorf("Public key size = %d, want %d", len(pubKey), DHKeySize)
+	response, err := b.HandleHandshake(hello)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Check it's not all zeros (should be random)
-	allZero := true
-	for _, b := range pubKey {
-		if b != 0 {
-			allZero = false
+	finish, err := a.HandleHandshake(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.HandleHandshake(finish); err != nil {
+		t.Fatal(err)
+	}
+}
+func cryptoPair(t testing.TB) (*CryptoState, *CryptoState) {
+	t.Helper()
+	a, err := NewCryptoStateWithPSK(testPSK, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewCryptoStateWithPSK(testPSK, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishCryptoPair(t, a, b)
+	return a, b
+}
+func TestLegacyCryptoFailsClosed(t *testing.T) {
+	if _, err := NewCryptoState(); !errors.Is(err, ErrPSKRequired) {
+		t.Fatal(err)
+	}
+	if _, err := NewCryptoStateWithPSK([]byte("weak"), true); !errors.Is(err, ErrPSKRequired) {
+		t.Fatal(err)
+	}
+	a, _ := NewCryptoStateWithPSK(testPSK, true)
+	if err := a.SetRemotePublicKey(a.GetPublicKey()); err == nil {
+		t.Fatal("bare key accepted")
+	}
+}
+func TestCryptoBidirectionalKeysAndNonces(t *testing.T) {
+	a, b := cryptoPair(t)
+	p := []byte("same payload")
+	x, _ := a.Encrypt(p)
+	y, _ := b.Encrypt(p)
+	if bytes.Equal(x[:NonceSize], y[:NonceSize]) || bytes.Equal(x, y) {
+		t.Fatal("bidirectional nonce/key reuse")
+	}
+	if _, err := a.Decrypt(x); err == nil {
+		t.Fatal("reflection accepted")
+	}
+	for _, tc := range []struct {
+		state *CryptoState
+		data  []byte
+	}{{b, x}, {a, y}} {
+		got, err := tc.state.Decrypt(tc.data)
+		if err != nil || !bytes.Equal(got, p) {
+			t.Fatalf("%x %v", got, err)
+		}
+	}
+	if a.SessionID() != b.SessionID() {
+		t.Fatal("session IDs differ")
+	}
+}
+func TestCryptoHandshakeAuthenticationAndVersion(t *testing.T) {
+	a, _ := NewCryptoStateWithPSK(testPSK, true, "ticket")
+	b, _ := NewCryptoStateWithPSK(testPSK, false, "ticket")
+	hello, _ := a.StartHandshake()
+	bad := append([]byte(nil), hello...)
+	bad[len(bad)-1] ^= 1
+	if _, err := b.HandleHandshake(bad); err == nil {
+		t.Fatal("modified hello accepted")
+	}
+	wrong, _ := NewCryptoStateWithPSK(bytes.Repeat([]byte{3}, 32), false, "ticket")
+	if _, err := wrong.HandleHandshake(hello); err == nil {
+		t.Fatal("wrong PSK accepted")
+	}
+	legacy := append([]byte(nil), hello...)
+	legacy[0] = 1
+	if _, err := b.HandleHandshake(legacy); err == nil {
+		t.Fatal("legacy accepted")
+	}
+	response, err := b.HandleHandshake(hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.IsEstablished() {
+		t.Fatal("server established without confirmation")
+	}
+	bad = append([]byte(nil), response...)
+	bad[35] ^= 1
+	if _, err = a.HandleHandshake(bad); err == nil {
+		t.Fatal("modified public key accepted")
+	}
+	finish, err := a.HandleHandshake(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad = append([]byte(nil), finish...)
+	bad[3] ^= 1
+	if _, err = b.HandleHandshake(bad); err == nil {
+		t.Fatal("bad confirmation accepted")
+	}
+	if _, err = b.HandleHandshake(finish); err != nil {
+		t.Fatal(err)
+	}
+	again, err := a.HandleHandshake(response)
+	if err != nil || !bytes.Equal(again, finish) {
+		t.Fatal("handshake retry changed state")
+	}
+	c, _ := NewCryptoStateWithPSK(testPSK, false, "ticket")
+	other, err := c.HandleHandshake(hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(response, other) {
+		t.Fatal("session randomness missing")
+	}
+	if _, err = a.HandleHandshake(other); err == nil {
+		t.Fatal("session rekey accepted")
+	}
+}
+func TestCryptoKeyFirstByteCollision(t *testing.T) {
+	a, _ := NewCryptoStateWithPSK(testPSK, true)
+	var b *CryptoState
+	for i := 0; i < 10000; i++ {
+		b, _ = NewCryptoStateWithPSK(testPSK, false)
+		if a.GetPublicKey()[0] == b.GetPublicKey()[0] {
 			break
 		}
+		b = nil
 	}
-	if allZero {
-		t.Error("Public key is all zeros")
+	if b == nil {
+		t.Fatal("could not generate colliding prefix")
 	}
-}
-
-func TestCryptoStateKeyExchange(t *testing.T) {
-	// Create two crypto states (simulating two peers)
-	cs1, err := NewCryptoState()
-	if err != nil {
-		t.Fatalf("NewCryptoState(1) failed: %v", err)
-	}
-
-	cs2, err := NewCryptoState()
-	if err != nil {
-		t.Fatalf("NewCryptoState(2) failed: %v", err)
-	}
-
-	// Exchange public keys
-	err = cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	if err != nil {
-		t.Fatalf("cs1.SetRemotePublicKey() failed: %v", err)
-	}
-
-	err = cs2.SetRemotePublicKey(cs1.GetPublicKey())
-	if err != nil {
-		t.Fatalf("cs2.SetRemotePublicKey() failed: %v", err)
-	}
-
-	// Both should be established
-	if !cs1.IsEstablished() {
-		t.Error("cs1 not established")
-	}
-	if !cs2.IsEstablished() {
-		t.Error("cs2 not established")
+	finishCryptoPair(t, a, b)
+	ct, _ := a.Encrypt([]byte("works"))
+	if _, err := b.Decrypt(ct); err != nil {
+		t.Fatal(err)
 	}
 }
-
-func TestCryptoStateEncryptDecrypt(t *testing.T) {
-	// Set up two crypto states
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
-
-	tests := []struct {
-		name      string
-		plaintext []byte
-	}{
-		{
-			name:      "short message",
-			plaintext: []byte("Hello, World!"),
-		},
-		{
-			name:      "empty message",
-			plaintext: []byte(""),
-		},
-		{
-			name:      "long message",
-			plaintext: bytes.Repeat([]byte("A"), 10000),
-		},
-		{
-			name:      "binary data",
-			plaintext: []byte{0x00, 0xFF, 0x55, 0xAA, 0xDE, 0xAD, 0xBE, 0xEF},
-		},
+func TestCryptoInvalidDHAndMalformedHandshakes(t *testing.T) {
+	a, _ := NewCryptoStateWithPSK(testPSK, true)
+	b, _ := NewCryptoStateWithPSK(testPSK, false)
+	for _, data := range [][]byte{nil, {2}, {2, 1}, {2, 2}, {2, 3}, make([]byte, 200)} {
+		if _, err := b.HandleHandshake(data); err == nil {
+			t.Fatal("malformed handshake accepted")
+		}
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Encrypt with cs1
-			ciphertext, err := cs1.Encrypt(tt.plaintext)
+	hello, _ := a.StartHandshake()
+	bad := append([]byte(nil), hello...)
+	clear(bad[35:67])
+	copy(bad[len(bad)-32:], mac(testPSK, "client hello", bad[:len(bad)-32]))
+	if _, err := b.HandleHandshake(bad); err == nil {
+		t.Fatal("low-order X25519 key accepted")
+	}
+	forgedFinish := append([]byte{2, 3}, mac(nil, "client finished", make([]byte, 32))...)
+	if _, err := b.HandleHandshake(forgedFinish); err == nil || b.IsEstablished() {
+		t.Fatal("failed DH allowed key confirmation")
+	}
+	finishCryptoPair(t, a, b)
+}
+func TestCryptoReplayWindowAndAuthentication(t *testing.T) {
+	a, b := cryptoPair(t)
+	packets := make([][]byte, replayWindow+2)
+	for i := range packets {
+		packets[i], _ = a.Encrypt([]byte{byte(i)})
+	}
+	for _, i := range []int{3, 1, 2, 0} {
+		if _, err := b.Decrypt(packets[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.Decrypt(packets[1]); !errors.Is(err, ErrReplay) {
+		t.Fatal("replay accepted", err)
+	}
+	bad := append([]byte(nil), packets[len(packets)-1]...)
+	bad[len(bad)-1] ^= 1
+	if _, err := b.Decrypt(bad); err == nil {
+		t.Fatal("tamper accepted")
+	}
+	if _, err := b.Decrypt(packets[4]); err != nil {
+		t.Fatal("invalid packet advanced window", err)
+	}
+	if _, err := b.Decrypt(packets[len(packets)-1]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Decrypt(packets[0]); !errors.Is(err, ErrReplay) {
+		t.Fatal("old packet accepted", err)
+	}
+	for _, data := range [][]byte{nil, {}, make([]byte, 27)} {
+		if _, err := b.Decrypt(data); err == nil {
+			t.Fatal("short packet accepted")
+		}
+	}
+}
+func TestCryptoConcurrentAndExhaustion(t *testing.T) {
+	a, b := cryptoPair(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ct, err := a.Encrypt([]byte("parallel"))
 			if err != nil {
-				t.Fatalf("Encrypt() failed: %v", err)
+				t.Error(err)
+				return
 			}
-
-			// Should be longer (nonce + tag overhead)
-			if len(ciphertext) < len(tt.plaintext)+NonceSize+TagSize {
-				t.Errorf("Ciphertext too short: got %d bytes", len(ciphertext))
+			if _, err = b.Decrypt(ct); err != nil {
+				t.Error(err)
 			}
-
-			// Decrypt with cs2
-			decrypted, err := cs2.Decrypt(ciphertext)
-			if err != nil {
-				t.Fatalf("Decrypt() failed: %v", err)
-			}
-
-			// Should match original
-			if !bytes.Equal(decrypted, tt.plaintext) {
-				t.Errorf("Decrypted data mismatch:\ngot  %v\nwant %v", decrypted, tt.plaintext)
-			}
-		})
+		}()
+	}
+	wg.Wait()
+	a.mu.Lock()
+	a.txNonce = math.MaxUint64
+	a.mu.Unlock()
+	if _, err := a.Encrypt(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Encrypt(nil); err == nil {
+		t.Fatal("nonce wrapped")
 	}
 }
-
-func TestCryptoStateNotEstablished(t *testing.T) {
-	cs, _ := NewCryptoState()
-
-	// Try to encrypt before key exchange
-	_, err := cs.Encrypt([]byte("test"))
-	if err == nil {
-		t.Error("Expected error when encrypting before key exchange")
-	}
-
-	// Try to decrypt before key exchange
-	_, err = cs.Decrypt([]byte("test"))
-	if err == nil {
-		t.Error("Expected error when decrypting before key exchange")
-	}
-}
-
-func TestCryptoStateInvalidCiphertext(t *testing.T) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
-
-	tests := []struct {
-		name       string
-		ciphertext []byte
-	}{
-		{
-			name:       "too short",
-			ciphertext: []byte("short"),
-		},
-		{
-			name:       "tampered data",
-			ciphertext: append([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, bytes.Repeat([]byte{0xFF}, 50)...),
-		},
-		{
-			name:       "empty",
-			ciphertext: []byte{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := cs2.Decrypt(tt.ciphertext)
-			if err == nil {
-				t.Error("Expected error for invalid ciphertext")
-			}
-		})
-	}
-}
-
-func TestCryptoStateInvalidPublicKey(t *testing.T) {
-	cs, _ := NewCryptoState()
-
-	tests := []struct {
-		name      string
-		publicKey []byte
-	}{
-		{
-			name:      "too short",
-			publicKey: []byte{1, 2, 3},
-		},
-		{
-			name:      "too long",
-			publicKey: make([]byte, DHKeySize+1),
-		},
-		{
-			name:      "empty",
-			publicKey: []byte{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := cs.SetRemotePublicKey(tt.publicKey)
-			if err == nil {
-				t.Error("Expected error for invalid public key")
-			}
-		})
-	}
-}
-
-func TestCryptoStateUniqueKeys(t *testing.T) {
-	// Generate multiple crypto states
-	states := make([]*CryptoState, 10)
-	for i := range states {
-		var err error
-		states[i], err = NewCryptoState()
-		if err != nil {
-			t.Fatalf("NewCryptoState() failed: %v", err)
-		}
-	}
-
-	// Check all public keys are unique
-	for i := 0; i < len(states); i++ {
-		for j := i + 1; j < len(states); j++ {
-			if bytes.Equal(states[i].GetPublicKey(), states[j].GetPublicKey()) {
-				t.Errorf("Duplicate public keys at indices %d and %d", i, j)
-			}
-		}
-	}
-}
-
-func TestCryptoStateNonceIncrement(t *testing.T) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
-
-	// Encrypt multiple messages
-	messages := []string{"first", "second", "third", "fourth", "fifth"}
-	ciphertexts := make([][]byte, len(messages))
-
-	for i, msg := range messages {
-		ct, err := cs1.Encrypt([]byte(msg))
-		if err != nil {
-			t.Fatalf("Encrypt(%d) failed: %v", i, err)
-		}
-		ciphertexts[i] = ct
-	}
-
-	// Check that nonces are different (first 12 bytes)
-	for i := 0; i < len(ciphertexts); i++ {
-		for j := i + 1; j < len(ciphertexts); j++ {
-			if bytes.Equal(ciphertexts[i][:NonceSize], ciphertexts[j][:NonceSize]) {
-				t.Errorf("Duplicate nonces in messages %d and %d", i, j)
-			}
-		}
-	}
-
-	// Decrypt all messages
-	for i, ct := range ciphertexts {
-		pt, err := cs2.Decrypt(ct)
-		if err != nil {
-			t.Fatalf("Decrypt(%d) failed: %v", i, err)
-		}
-		if string(pt) != messages[i] {
-			t.Errorf("Message %d: got %q, want %q", i, string(pt), messages[i])
-		}
-	}
-}
-
-func TestCryptoStateAuthenticationTag(t *testing.T) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
-
-	plaintext := []byte("authenticated message")
-	ciphertext, _ := cs1.Encrypt(plaintext)
-
-	// Tamper with the last byte (authentication tag)
-	ciphertext[len(ciphertext)-1] ^= 0xFF
-
-	// Decryption should fail
-	_, err := cs2.Decrypt(ciphertext)
-	if err == nil {
-		t.Error("Expected authentication failure for tampered ciphertext")
-	}
-}
-
 func BenchmarkCryptoEncrypt(b *testing.B) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
-
-	data := make([]byte, 1400) // Typical packet size
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = cs1.Encrypt(data)
-	}
-}
-
-func BenchmarkCryptoDecrypt(b *testing.B) {
-	cs1, _ := NewCryptoState()
-	cs2, _ := NewCryptoState()
-	cs1.SetRemotePublicKey(cs2.GetPublicKey())
-	cs2.SetRemotePublicKey(cs1.GetPublicKey())
-
+	a, _ := cryptoPair(b)
 	data := make([]byte, 1400)
-	ciphertext, _ := cs1.Encrypt(data)
-
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = cs2.Decrypt(ciphertext)
+		if _, err := a.Encrypt(data); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
-
+func BenchmarkCryptoDecrypt(b *testing.B) {
+	a, receiver := cryptoPair(b)
+	data := make([]byte, 1400)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+	for i := 0; i < b.N; {
+		b.StopTimer()
+		n := min(256, b.N-i)
+		packets := make([][]byte, n)
+		for j := range packets {
+			packets[j], _ = a.Encrypt(data)
+		}
+		b.StartTimer()
+		for _, ct := range packets {
+			if _, err := receiver.Decrypt(ct); err != nil {
+				b.Fatal(err)
+			}
+		}
+		i += n
+	}
+}
 func BenchmarkKeyExchange(b *testing.B) {
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		cs1, _ := NewCryptoState()
-		cs2, _ := NewCryptoState()
-		cs1.SetRemotePublicKey(cs2.GetPublicKey())
-		cs2.SetRemotePublicKey(cs1.GetPublicKey())
+		cryptoPair(b)
 	}
 }

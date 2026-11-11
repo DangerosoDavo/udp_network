@@ -1,0 +1,12 @@
+go version go1.27.4 windows/amd64
+goos: windows
+goarch: amd64
+pkg: github.com/DangerosoDavo/udp_network/protocol
+cpu: Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz
+BenchmarkMaintenanceCodecDecode 	   10000	     50049 ns/op	   2.02 MB/s	    2280 B/op	      52 allocs/op
+BenchmarkMaintenanceCodecDecode 	   10000	     49521 ns/op	   2.04 MB/s	    2280 B/op	      52 allocs/op
+BenchmarkMaintenanceCodecDecode 	   17576	     20797 ns/op	   4.86 MB/s	    2280 B/op	      52 allocs/op
+BenchmarkMaintenanceCodecDecode 	   10000	     30588 ns/op	   3.30 MB/s	    2280 B/op	      52 allocs/op
+BenchmarkMaintenanceCodecDecode 	   19912	     20090 ns/op	   5.03 MB/s	    2280 B/op	      52 allocs/op
+PASS
+ok  	github.com/DangerosoDavo/udp_network/protocol	3.721s
