@@ -100,6 +100,15 @@ envelope. It is not a compact game-state schema. JSON interface numbers become
 Raw byte APIs are available for application-defined binary messages. An Unreal
 C++ implementation and cross-language conformance tests still need to be built.
 
+## WebSocket disconnect diagnostics
+
+`WebSocketClient.LastDisconnectError()` retains the first terminal cause as a
+`*WebSocketDisconnectError`, including its operation and wrapped original error.
+Use `errors.As` and `errors.Is` to classify read, heartbeat, write and context
+failures. The cause is visible before the connection becomes disconnected,
+survives `Stop`, and resets when a new `Connect` attempt begins. Applications can
+record bounded reason codes while retaining native error types for inspection.
+
 ## Validate and measure
 
 ```sh

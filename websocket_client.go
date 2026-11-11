@@ -18,10 +18,27 @@ type webSocketClientSession struct {
 	done      chan struct{}
 	once      sync.Once
 	writeGate chan struct{}
+	owner     *WebSocketClient
+	epoch     uint64
 }
 
-func (s *webSocketClientSession) close() {
-	s.once.Do(func() { close(s.done); _ = s.ws.Close(); s.conn.SetState(protocol.StateClosed) })
+func (s *webSocketClientSession) closeWith(operation string, err error) {
+	s.once.Do(func() {
+		if s.owner != nil {
+			s.owner.mu.Lock()
+			if s.owner.diagnosticEpoch == s.epoch {
+				s.owner.lastDisconnect = &WebSocketDisconnectError{Operation: operation, Err: err}
+			}
+			s.owner.mu.Unlock()
+		}
+		close(s.done)
+		if s.ws != nil {
+			_ = s.ws.Close()
+		}
+		if s.conn != nil {
+			s.conn.SetState(protocol.StateClosed)
+		}
+	})
 }
 
 type WebSocketClient struct {
@@ -37,6 +54,8 @@ type WebSocketClient struct {
 	codec              *protocol.MessageCodec
 	timeout, keepAlive time.Duration
 	options            ClientOptions
+	diagnosticEpoch    uint64
+	lastDisconnect     *WebSocketDisconnectError
 }
 
 func NewWebSocketClient(options *ClientOptions) (*WebSocketClient, error) {
@@ -81,6 +100,8 @@ func (c *WebSocketClient) Connect(address string) error {
 	c.dialCancel = cancel
 	c.epoch++
 	epoch := c.epoch
+	c.diagnosticEpoch = epoch
+	c.lastDisconnect = nil
 	c.mu.Unlock()
 	defer cancel()
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second, TLSClientConfig: c.options.TLSConfig}
@@ -102,11 +123,11 @@ func (c *WebSocketClient) Connect(address string) error {
 	}
 	conn := protocol.NewConnection(addr)
 	conn.SetState(protocol.StateConnected)
-	session := &webSocketClientSession{ws: ws, conn: conn, done: make(chan struct{}), writeGate: make(chan struct{}, 1)}
+	session := &webSocketClientSession{ws: ws, conn: conn, done: make(chan struct{}), writeGate: make(chan struct{}, 1), owner: c, epoch: epoch}
 	c.mu.Lock()
 	if c.epoch != epoch {
 		c.mu.Unlock()
-		session.close()
+		session.closeWith(WebSocketOpContextCancel, context.Canceled)
 		return context.Canceled
 	}
 	c.session = session
@@ -131,25 +152,31 @@ func (c *WebSocketClient) Stop() {
 		c.dialCancel = nil
 	}
 	session := c.session
-	c.session = nil
-	c.connection = nil
 	c.mu.Unlock()
 	if session != nil {
-		session.close()
+		session.closeWith(WebSocketOpManualStop, net.ErrClosed)
 	}
+	c.mu.Lock()
+	if c.session == session {
+		c.session = nil
+		c.connection = nil
+	}
+	c.mu.Unlock()
 }
 
 func (c *WebSocketClient) readLoop(session *webSocketClientSession, timeout time.Duration) {
-	defer session.close()
+	defer session.closeWith(WebSocketOpReadNext, net.ErrClosed)
 	var buffer []byte
 	var probe [1]byte
 	for {
 		kind, reader, err := session.ws.NextReader()
 		if err != nil {
+			session.closeWith(WebSocketOpReadNext, err)
 			return
 		}
 		buffer, err = readWebSocketFrame(reader, buffer, probe[:], c.options.MaxMessageBytes)
 		if err != nil {
+			session.closeWith(WebSocketOpReadFrame, err)
 			return
 		}
 		_ = session.ws.SetReadDeadline(time.Now().Add(timeout))
@@ -163,6 +190,7 @@ func (c *WebSocketClient) readLoop(session *webSocketClientSession, timeout time
 		current := c.session == session
 		c.mu.RUnlock()
 		if !current {
+			session.closeWith(WebSocketOpContextCancel, context.Canceled)
 			return
 		}
 		if borrowedRawHandler != nil {
@@ -176,6 +204,7 @@ func (c *WebSocketClient) readLoop(session *webSocketClientSession, timeout time
 		}
 		msg, err := c.codec.Decode(buffer)
 		if err != nil {
+			session.closeWith(WebSocketOpProtocolDecode, err)
 			return
 		}
 		if handler != nil {
@@ -187,7 +216,6 @@ func (c *WebSocketClient) readLoop(session *webSocketClientSession, timeout time
 func (c *WebSocketClient) heartbeat(session *webSocketClientSession, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	defer session.close()
 	for {
 		select {
 		case <-session.done:
@@ -195,6 +223,7 @@ func (c *WebSocketClient) heartbeat(session *webSocketClientSession, interval ti
 		case <-ticker.C:
 			// WriteControl is documented safe concurrently with the single data writer.
 			if err := session.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+				session.closeWith(WebSocketOpHeartbeat, err)
 				return
 			}
 		}
@@ -241,14 +270,18 @@ func (c *WebSocketClient) SendMessageContext(ctx context.Context, msg *protocol.
 	if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
 		deadline = limit
 	}
-	stopCancel := context.AfterFunc(ctx, session.close)
+	stopCancel := session.watchWriteContext(ctx)
 	defer stopCancel()
 	_ = session.ws.SetWriteDeadline(deadline)
 	if err := session.ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
-		session.close()
+		session.closeWith(WebSocketOpWrite, err)
 		return err
 	}
 	return nil
+}
+
+func (s *webSocketClientSession) watchWriteContext(ctx context.Context) func() bool {
+	return context.AfterFunc(ctx, func() { s.closeWith(WebSocketOpContextCancel, ctx.Err()) })
 }
 
 func (c *WebSocketClient) SendText(text string) error {
